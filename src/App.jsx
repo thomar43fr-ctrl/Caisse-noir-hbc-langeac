@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from "react"; import { db, auth } from "./firebase"; import {   collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, writeBatch, getDocs
-} from "firebase/firestore"; import {   createUserWithEmailAndPassword, signInWithEmailAndPassword,   signOut, onAuthStateChanged } from "firebase/auth"; import { INITIAL_RULES, INITIAL_PAYMENTS, INITIAL_CALENDAR } from "./data"; import { HISTORICAL_MATCHES } from "./matches"; import LOGO_B64 from "./logo";
+} from "firebase/firestore"; import {   createUserWithEmailAndPassword, signInWithEmailAndPassword,   signOut, onAuthStateChanged } from "firebase/auth"; import { INITIAL_RULES, INITIAL_PAYMENTS, INITIAL_CALENDAR } from "./data"; import { HISTORICAL_MATCHES } from "./matches";
 function getPlayerInfractionStats(entries) {   const counts = {};   entries.forEach(e => {     if (!e.detail || e.detail === "Rien" || e.amount === 0) return;     const d = e.detail.toLowerCase();
     [
       {key:"mitraillette",label:"Mitraillette"},
@@ -26,8 +26,7 @@ export default function App() {
       } else {
         setIsAdmin(false);
       }     });     return () => unsub();
-  }, []);
-  const handleAuth = async () => {     setAuthError("");     setAuthLoading(true);     try {       if (authMode === "login") {         await signInWithEmailAndPassword(auth, authEmail, authPassword);
+  }, []);   const handleAuth = async () => {     setAuthError("");     setAuthLoading(true);     try {       if (authMode === "login") {         await signInWithEmailAndPassword(auth, authEmail, authPassword);
       } else {         await createUserWithEmailAndPassword(auth, authEmail, authPassword);
       }       setAuthEmail(""); setAuthPassword("");
     } catch(e) {       const msgs = {
@@ -46,8 +45,7 @@ export default function App() {
       checkDone();
     });     const unsubPayments = onSnapshot(collection(db, "payments"), snap => {       if (!snap.empty) setPayments(snap.docs.map(d => ({...d.data(), fbId: d.id})       checkDone();
     });     const unsubCal = onSnapshot(collection(db, "calendar"), snap => {       if (!snap.empty) setCalendar(snap.docs.map(d => ({...d.data(), fbId: d.id})       checkDone();
-    });
-    return () => { unsubRules(); unsubMatches(); unsubPayments(); unsubCal(); };   }, []);
+    });     return () => { unsubRules(); unsubMatches(); unsubPayments(); unsubCal(); };   }, []);
   // Init Firebase if empty   useEffect(() => {     const initIfEmpty = async () => {       const rulesSnap = await getDocs(collection(db, "rules"));       if (rulesSnap.empty) {         const batch = writeBatch(db);         INITIAL_RULES.forEach(r => batch.set(doc(db, "rules", String(r.id)), r));
         HISTORICAL_MATCHES.forEach(m => batch.set(doc(db, "matches", String(m.id)
         INITIAL_PAYMENTS.forEach(p => batch.set(doc(db, "payments", p.player), p)         INITIAL_CALENDAR.forEach(c => batch.set(doc(db, "calendar", String(c.id))         await batch.commit();
@@ -58,8 +56,8 @@ export default function App() {
     [matches]   );
   const playerStats = useMemo(() => {     const stats = {};     allEntries.forEach(e => {       const p = e.player;       if (!stats[p]) stats[p] = {total:0, count:0, chaboula:0, entries:[]};       stats[p].total += e.amount;       if (e.amount > 0) stats[p].count++;       if (e.detail && /chaboula/i.test(e.detail)) stats[p].chaboula++;       stats[p].entries.push(e);
     });     return stats;   }, [allEntries]);
-  // Sync payment totals automatically when infractions change   useEffect(() => {     if (!isAdmin || Object.keys(playerStats).length === 0 || payments.length ===     payments.forEach(async p => {       const newTotal = playerStats[p.player]?.total;       if (newTotal !== undefined && Math.abs(newTotal - p.total) > 0.01) {
-        try {           await updateDoc(doc(db, "payments", p.fbId || p.player), {total: newTot
+  // Sync payment totals automatically when infractions change   useEffect(() => {     if (!isAdmin || Object.keys(playerStats).length === 0 || payments.length ===     payments.forEach(async p => {       const newTotal = playerStats[p.player]?.total;       if (newTotal !== undefined && Math.abs(newTotal - p.total) > 0.01) {         try {
+          await updateDoc(doc(db, "payments", p.fbId || p.player), {total: newTot
         } catch(e) {}
       }
     });
@@ -73,8 +71,7 @@ export default function App() {
     // Update payment total     const player = newInfraction.player;     const p = payments.find(x => x.player === player);     if (p) {       const newTotal = (playerStats[player]?.total||0) + amount;
       await updateDoc(doc(db, "payments", p.fbId||player), {total: newTotal});
     }     setNewInfraction({player:"",ruleId:"",customDetail:"",customAmount:"",matchLa     setShowAddInfraction(false);     showToast("Infraction ajoutée ✓");
-  };
-  const deleteInfraction = async (matchId, entryIndex) => {     const m = matches.find(x => x.fbId === matchId || String(x.id) === String(mat     if (!m) return;     const entry = (m.entries||[])[entryIndex];     const newEntries = (m.entries||[]).filter((_,i) => i !== entryIndex);     const fbId = m.fbId || String(m.id);     await updateDoc(doc(db, "matches", fbId), {entries: newEntries});
+  };   const deleteInfraction = async (matchId, entryIndex) => {     const m = matches.find(x => x.fbId === matchId || String(x.id) === String(mat     if (!m) return;     const entry = (m.entries||[])[entryIndex];     const newEntries = (m.entries||[]).filter((_,i) => i !== entryIndex);     const fbId = m.fbId || String(m.id);     await updateDoc(doc(db, "matches", fbId), {entries: newEntries});
     // Update payment total     if (entry) {       const p = payments.find(x => x.player === entry.player);       if (p) {         const newTotal = Math.max(0, p.total - entry.amount);         await updateDoc(doc(db, "payments", p.fbId||entry.player), {total: newTot
       }     }     showToast("Infraction supprimée");
   };
@@ -85,19 +82,20 @@ export default function App() {
   const deleteRule = async (id) => {     await deleteDoc(doc(db, "rules", String(id)));     showToast("Règle supprimée");
   };
   const addCalendarMatch = async () => {     if (!newCalMatch.opponent || !newCalMatch.date) return;     const m = {...newCalMatch, id: Date.now(), sortKey: 999, home: newCalMatch.ho     await setDoc(doc(db, "calendar", String(m.id)), m);     setNewCalMatch({date:"",opponent:"",home:true,location:"",team:"Éq1"});     setShowAddCalendar(false);     showToast("Match ajouté ✓");
-  };   const savePayment = async (playerName) => {     const added = parseFloat(paymentInput) || 0;     const p = payments.find(x => x.player === playerName);     if (!p) return;     const newPaid = Math.min(p.paid + added, p.total);     await updateDoc(doc(db, "payments", p.fbId||playerName), {paid: newPaid});     setEditingPayment(null); setPaymentInput("");     showToast("Paiement enregistré ✓");
+  };
+  const savePayment = async (playerName) => {     const added = parseFloat(paymentInput) || 0;     const p = payments.find(x => x.player === playerName);     if (!p) return;     const newPaid = Math.min(p.paid + added, p.total);     await updateDoc(doc(db, "payments", p.fbId||playerName), {paid: newPaid});     setEditingPayment(null); setPaymentInput("");     showToast("Paiement enregistré ✓");
   };
   const C = {     card: {background:"white", borderRadius:16, padding:20, boxShadow:"0 2px 12px     h3: {margin:"0 0 16px", color:"#0d47a1", fontFamily:"'Bebas Neue',sans-serif"   };
   // LOADING SCREEN   if (loading) return (
     <div style={{minHeight:"100vh",background:"#f0f6ff",display:"flex",alignItems
-      <img src={LOGO_B64} style={{width:80,height:80,borderRadius:"50%",objectFit       <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:24,color:"#0d47a
+      <div style={{width:80,height:80,borderRadius:"50%",background:"#1565c0",dis       <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:24,color:"#0d47a
     </div>
   );
   // LOGIN SCREEN   if (!user) return (
     <div style={{minHeight:"100vh",background:"linear-gradient(135deg,#1565c0,#0d
       <div style={{background:"white",borderRadius:20,padding:32,width:"100%",max
         <div style={{textAlign:"center",marginBottom:28}}>
-          <img src={LOGO_B64} style={{width:72,height:72,borderRadius:"50%",objec
+          <div style={{width:72,height:72,borderRadius:"50%",background:"linear-g
           <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:26,color:"#0           <div style={{color:"#78909c",fontSize:12,fontWeight:700,textTransform:"         </div>
         <div style={{display:"flex",background:"#f0f6ff",borderRadius:10,padding:
           {[{k:"login",l:"Connexion"},{k:"register",l:"Créer un compte"}].map(({k             <button key={k} onClick={()=>{setAuthMode(k);setAuthError("");}}               style={{flex:1,padding:"8px 0",borderRadius:8,border:"none",cursor:
@@ -123,7 +121,7 @@ export default function App() {
       <div style={{background:"linear-gradient(135deg,#1565c0 0%,#0d47a1 100%)",b
         <div style={{maxWidth:1200,margin:"0 auto",padding:"10px 16px",display:"f
           <div style={{display:"flex",alignItems:"center",gap:12}}>
-            <img src={LOGO_B64} style={{width:46,height:46,borderRadius:"50%",obj             <div>
+            <div style={{width:46,height:46,borderRadius:"50%",background:"rgba(2             <div>
               <div style={{color:"white",fontFamily:"'Bebas Neue',sans-serif",fon               <div style={{color:"#90caf9",fontSize:10,fontWeight:700,letterSpaci
             </div>
           </div>
@@ -214,8 +212,7 @@ export default function App() {
                       <div style={{display:"flex",alignItems:"center",gap:10,flex
                         <div style={{width:36,height:36,borderRadius:"50%",backgr
                         <div style={{minWidth:0}}>
-                          <div style={{fontWeight:800,color:"#0d47a1",fontSize:15
-                          <div style={{display:"flex",alignItems:"center",gap:4,m
+                          <div style={{fontWeight:800,color:"#0d47a1",fontSize:15                           <div style={{display:"flex",alignItems:"center",gap:4,m
                             <div style={{width:70,height:5,background:"#e3f2fd",b
                               <div style={{width:`${Math.min(pct,100)}%`,height:"
                             </div>                             <span style={{fontSize:10,color:"#90a4ae",fontWeight:
@@ -282,8 +279,8 @@ export default function App() {
                           <div style={{fontFamily:"'Bebas Neue',sans-serif",fontS
                         </div>
                         {mE.map((e,i) => (
-                          <div key={i} style={{display:"flex",alignItems:"center"                             <div style={{fontSize:13,color:"#546e7a",flex:1}}>{e.                             <div style={{display:"flex",alignItems:"center",gap:8
-                              <div style={{fontFamily:"'Bebas Neue',sans-serif",f
+                          <div key={i} style={{display:"flex",alignItems:"center"                             <div style={{fontSize:13,color:"#546e7a",flex:1}}>{e.
+                            <div style={{display:"flex",alignItems:"center",gap:8                               <div style={{fontFamily:"'Bebas Neue',sans-serif",f
                               {isAdmin && <button onClick={()=>deleteInfraction(e
                             </div>
                           </div>
@@ -324,8 +321,7 @@ export default function App() {
                           <option value="">Personnalisée</option>
                           {rules.map(r=><option key={r.id} value={r.id}>{r.name} 
                         </select>
-                      </div>
-                      {!newInfraction.ruleId && <>
+                      </div>                       {!newInfraction.ruleId && <>
                         <div>
                           <label style={{fontSize:11,fontWeight:700,color:"#78909
                           <input value={newInfraction.customDetail} onChange={e=>
@@ -362,7 +358,8 @@ export default function App() {
                 <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
                   <input value={newRule.name} onChange={e=>setNewRule(p=>({...p,n
                   <input type="number" inputMode="decimal" value={newRule.amount}
-                  <button onClick={addRule} style={{background:"#1565c0",color:"w                   <button onClick={()=>setShowAddRule(false)} style={{background:                 </div>
+                  <button onClick={addRule} style={{background:"#1565c0",color:"w                   <button onClick={()=>setShowAddRule(false)} style={{background:
+                </div>
               </div>
             )}
             {isAdmin && editingRule && (
@@ -405,8 +402,7 @@ export default function App() {
                     </div>
                   ))}
                   <div>
-                    <label style={{fontSize:11,fontWeight:700,color:"#78909c",dis
-                    <select value={newCalMatch.home} onChange={e=>setNewCalMatch(
+                    <label style={{fontSize:11,fontWeight:700,color:"#78909c",dis                     <select value={newCalMatch.home} onChange={e=>setNewCalMatch(
                       <option value="true">Domicile</option><option value="false"
                     </select>
                   </div>
@@ -446,7 +442,8 @@ export default function App() {
                     <div key={name} style={{marginBottom:10,cursor:"pointer"}} on
                       <div style={{display:"flex",justifyContent:"space-between",
                         <span style={{fontWeight:700,color:"#1a237e",fontSize:14}
-                        <span style={{fontFamily:"'Bebas Neue',sans-serif",fontSi                       </div>
+                        <span style={{fontFamily:"'Bebas Neue',sans-serif",fontSi
+                      </div>
                       <div style={{background:"#e3f2fd",borderRadius:4,height:7}}
                         <div style={{width:`${pct}%`,height:"100%",background:"li
                       </div>
