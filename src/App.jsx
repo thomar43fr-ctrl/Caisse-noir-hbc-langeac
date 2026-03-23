@@ -77,9 +77,8 @@ export default function App() {
       setUser(u);
       if (u) {
         try {
-          const adminSnap = await getDocs(collection(db, "admins"));
-          const adminEmails = adminSnap.docs.map(d => d.id);
-          setIsAdmin(adminEmails.includes(u.email));
+      const userDoc = await getDoc(doc(db, "users", u.uid));
+          setIsAdmin(userDoc.exists() && userDoc.data().role === "admin");
         } catch(e) { setIsAdmin(false); }
       } else {
         setIsAdmin(false);
