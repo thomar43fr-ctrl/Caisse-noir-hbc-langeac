@@ -83,6 +83,7 @@ export default function App() {
         } catch(e) { setIsAdmin(false); }
       } else {
         setIsAdmin(false);
+        setLoading(false);
       }
     });
     return () => unsub();
@@ -112,8 +113,13 @@ export default function App() {
     setAuthLoading(false);
   };
 
-  // Firebase real-time listeners
+  // Firebase real-time listeners - only start when user is logged in
   useEffect(() => {
+    if (!user) {
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
     let loaded = 0;
     const checkDone = () => { loaded++; if (loaded >= 4) setLoading(false); };
     const unsubRules = onSnapshot(collection(db, "rules"), snap => {
@@ -136,7 +142,7 @@ export default function App() {
       checkDone();
     });
     return () => { unsubRules(); unsubMatches(); unsubPayments(); unsubCal(); };
-  }, []);
+  }, [user]);
 
   // Init Firebase if empty
   useEffect(() => {
