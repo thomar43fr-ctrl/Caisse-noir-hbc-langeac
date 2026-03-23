@@ -77,14 +77,10 @@ export default function App() {
       setUser(u);
       if (u) {
         try {
-          // Utilisation de getDocs pour vérifier la collection admins
           const adminSnap = await getDocs(collection(db, "admins"));
           const adminEmails = adminSnap.docs.map(d => d.id);
           setIsAdmin(adminEmails.includes(u.email));
-        } catch(e) { 
-          console.error("Erreur check admin:", e);
-          setIsAdmin(false); 
-        }
+        } catch(e) { setIsAdmin(false); }
       } else {
         setIsAdmin(false);
       }
@@ -116,47 +112,30 @@ export default function App() {
     setAuthLoading(false);
   };
 
-  // Firebase real-time listeners (SYSTÈME DE BLOCAGE CORRIGÉ)
+  // Firebase real-time listeners
   useEffect(() => {
-    let loadedCount = 0;
-    const totalToLoad = 4;
-    
-    // Fonction qui libère le loading même si une collection est vide ou échoue
-    const checkDone = () => { 
-      loadedCount++; 
-      if (loadedCount >= totalToLoad) setLoading(false); 
-    };
-
+    let loaded = 0;
+    const checkDone = () => { loaded++; if (loaded >= 4) setLoading(false); };
     const unsubRules = onSnapshot(collection(db, "rules"), snap => {
       if (!snap.empty) setRules(snap.docs.map(d => ({...d.data(), id: d.id})));
       checkDone();
-    }, () => checkDone()); // En cas d'erreur de permission/réseau
-
+    });
     const unsubMatches = onSnapshot(collection(db, "matches"), snap => {
       if (!snap.empty) {
         const fbMatches = snap.docs.map(d => ({...d.data(), fbId: d.id}));
         setMatches(fbMatches.sort((a,b) => (a.sortKey||0)-(b.sortKey||0)));
       }
       checkDone();
-    }, () => checkDone());
-
+    });
     const unsubPayments = onSnapshot(collection(db, "payments"), snap => {
       if (!snap.empty) setPayments(snap.docs.map(d => ({...d.data(), fbId: d.id})));
       checkDone();
-    }, () => checkDone());
-
+    });
     const unsubCal = onSnapshot(collection(db, "calendar"), snap => {
       if (!snap.empty) setCalendar(snap.docs.map(d => ({...d.data(), fbId: d.id})));
       checkDone();
-    }, () => checkDone());
-
-    // Sécurité ultime : force l'affichage après 5 secondes si Firebase est trop lent
-    const safetyTimeout = setTimeout(() => setLoading(false), 5000);
-
-    return () => { 
-      unsubRules(); unsubMatches(); unsubPayments(); unsubCal(); 
-      clearTimeout(safetyTimeout);
-    };
+    });
+    return () => { unsubRules(); unsubMatches(); unsubPayments(); unsubCal(); };
   }, []);
 
   // Init Firebase if empty
@@ -189,7 +168,7 @@ export default function App() {
     allEntries.forEach(e => {
       const p = e.player;
       if (!stats[p]) stats[p] = {total:0, count:0, chaboula:0, entries:[]};
-      stats[p].total += (e.amount || 0);
+      stats[p].total += e.amount;
       if (e.amount > 0) stats[p].count++;
       if (e.detail && /chaboula/i.test(e.detail)) stats[p].chaboula++;
       stats[p].entries.push(e);
@@ -211,14 +190,14 @@ export default function App() {
   }, [playerStats, isAdmin]);
 
   const players = useMemo(() => Object.keys(playerStats).sort(), [playerStats]);
-  const totalCaisse = useMemo(() => payments.reduce((s,p) => s+(p.total||0), 0), [payments]);
+  const totalCaisse = useMemo(() => payments.reduce((s,p) => s+p.total, 0), [payments]);
   const matchTotals = useMemo(() => matches.map(m => ({
-    ...m, total: (m.entries||[]).reduce((s,e) => s+(e.amount||0), 0)
+    ...m, total: (m.entries||[]).reduce((s,e) => s+e.amount, 0)
   })), [matches]);
   const topOffenders = useMemo(() => Object.entries(playerStats).sort((a,b) => b[1].total-a[1].total).slice(0,5), [playerStats]);
   const topChaboula = useMemo(() => Object.entries(playerStats).sort((a,b) => b[1].chaboula-a[1].chaboula).slice(0,5), [playerStats]);
 
-  // --- ACTIONS (Logique conservée de A à Z) ---
+  // Actions
   const addInfraction = async () => {
     if (!newInfraction.player || (!newInfraction.ruleId && !newInfraction.customDetail)) return;
     const rule = rules.find(r => String(r.id) === String(newInfraction.ruleId));
@@ -238,6 +217,7 @@ export default function App() {
       };
       await setDoc(doc(db, "matches", String(newMatch.id)), newMatch);
     }
+    // Update payment total
     const player = newInfraction.player;
     const p = payments.find(x => x.player === player);
     if (p) {
@@ -256,6 +236,7 @@ export default function App() {
     const newEntries = (m.entries||[]).filter((_,i) => i !== entryIndex);
     const fbId = m.fbId || String(m.id);
     await updateDoc(doc(db, "matches", fbId), {entries: newEntries});
+    // Update payment total
     if (entry) {
       const p = payments.find(x => x.player === entry.player);
       if (p) {
@@ -309,7 +290,7 @@ export default function App() {
     h3: {margin:"0 0 16px", color:"#0d47a1", fontFamily:"'Bebas Neue',sans-serif", fontSize:20, letterSpacing:1},
   };
 
-  // RENDU LOADING (Correctif de blocage appliqué)
+  // LOADING SCREEN
   if (loading) return (
     <div style={{minHeight:"100vh",background:"#f0f6ff",display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:16}}>
       <div style={{width:80,height:80,borderRadius:"50%",background:"#1565c0",display:"flex",alignItems:"center",justifyContent:"center",color:"white",fontSize:36}}>🤾</div>
@@ -317,12 +298,12 @@ export default function App() {
     </div>
   );
 
-  // LOGIN SCREEN (Conservé)
+  // LOGIN SCREEN
   if (!user) return (
     <div style={{minHeight:"100vh",background:"linear-gradient(135deg,#1565c0,#0d47a1)",display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
       <div style={{background:"white",borderRadius:20,padding:32,width:"100%",maxWidth:380,boxShadow:"0 20px 60px rgba(0,0,0,0.3)"}}>
         <div style={{textAlign:"center",marginBottom:28}}>
-          <div style={{width:72,height:72,borderRadius:"50%",background:"linear-gradient(135deg,#1565c0,#42a5f5)",display:"flex",alignItems:"center",justifyContent:"center",color:"white",fontSize:32,margin:"0 auto 12px"}}>🤾</div>
+          <div style={{width:72,height:72,borderRadius:"50%",background:"linear-gradient(135deg,#1565c0,#42a5f5)",display:"flex",alignItems:"center",justifyContent:"center",color:"white",fontSize:32,marginBottom:12}}>🤾</div>
           <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:26,color:"#0d47a1",letterSpacing:2}}>HBC LANGEAC</div>
           <div style={{color:"#78909c",fontSize:12,fontWeight:700,textTransform:"uppercase",letterSpacing:1}}>Caisse Noire</div>
         </div>
@@ -353,7 +334,7 @@ export default function App() {
     </div>
   );
 
-  // --- RENDU APP (Conservé de A à Z) ---
+  // MAIN APP
   return (
     <div style={{minHeight:"100vh",background:"#f0f6ff",fontFamily:"'Nunito',sans-serif"}}>
       {toast && (
@@ -368,7 +349,7 @@ export default function App() {
           <div style={{display:"flex",alignItems:"center",gap:12}}>
             <div style={{width:46,height:46,borderRadius:"50%",background:"rgba(255,255,255,0.2)",display:"flex",alignItems:"center",justifyContent:"center",color:"white",fontSize:22,flexShrink:0}}>🤾</div>
             <div>
-              <div style={{color:"white",fontFamily:"'Bebas Neue',sans-serif",fontSize:20,letterSpacing:2,lineHeight:1}}>HBC LANGEAC {isAdmin && "👑"}</div>
+              <div style={{color:"white",fontFamily:"'Bebas Neue',sans-serif",fontSize:20,letterSpacing:2,lineHeight:1}}>HBC LANGEAC</div>
               <div style={{color:"#90caf9",fontSize:10,fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>Caisse Noire</div>
             </div>
           </div>
@@ -399,27 +380,405 @@ export default function App() {
       </div>
 
       <div style={{maxWidth:1200,margin:"0 auto",padding:"16px 12px"}}>
-         {/* Ici le reste de ton Dashboard, onglets, etc... */}
-         {/* (Logique identique à ton code source) */}
-         {activeTab === "Dashboard" && (
+
+        {/* DASHBOARD */}
+        {activeTab==="Dashboard" && (
+          <div>
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:12,marginBottom:20}}>
-               {[
-                 {label:"Total caisse",value:`${totalCaisse.toFixed(1)}€`,color:"#1565c0",icon:"💰"},
-                 {label:"Matchs",value:matches.length,color:"#1976d2",icon:"🏆"},
-                 {label:"Joueurs",value:players.length,color:"#1e88e5",icon:"👥"},
-                 {label:"Record",value:`${Math.max(0,...matchTotals.map(m=>m.total))}€`,color:"#2196f3",icon:"🔥"},
-               ].map(card => (
-                 <div key={card.label} style={{...C.card,borderTop:`4px solid ${card.color}`,padding:16}}>
-                   <div style={{fontSize:24}}>{card.icon}</div>
-                   <div style={{fontSize:22,fontFamily:"'Bebas Neue',sans-serif",color:card.color}}>{card.value}</div>
-                   <div style={{fontSize:11,color:"#78909c",fontWeight:700,textTransform:"uppercase",letterSpacing:1}}>{card.label}</div>
-                 </div>
-               ))}
+              {[
+                {label:"Total caisse",value:`${totalCaisse.toFixed(1)}€`,color:"#1565c0",icon:"💰"},
+                {label:"Matchs",value:matches.length,color:"#1976d2",icon:"🏆"},
+                {label:"Joueurs",value:players.length,color:"#1e88e5",icon:"👥"},
+                {label:"Record",value:`${Math.max(0,...matchTotals.map(m=>m.total))}€`,color:"#2196f3",icon:"🔥"},
+              ].map(card => (
+                <div key={card.label} style={{...C.card,borderTop:`4px solid ${card.color}`,padding:16}}>
+                  <div style={{fontSize:24}}>{card.icon}</div>
+                  <div style={{fontSize:22,fontFamily:"'Bebas Neue',sans-serif",color:card.color}}>{card.value}</div>
+                  <div style={{fontSize:11,color:"#78909c",fontWeight:700,textTransform:"uppercase",letterSpacing:1}}>{card.label}</div>
+                </div>
+              ))}
             </div>
-         )}
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(280px,1fr))",gap:16}}>
+              <div style={C.card}>
+                <h3 style={C.h3}>🏆 Top Mauvais Élèves</h3>
+                {topOffenders.map(([name,stats],i) => (
+                  <div key={name} onClick={()=>{setSelectedPlayer(name);setActiveTab("Joueurs");}} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 0",borderBottom:"1px solid #f0f0f0",cursor:"pointer"}}>
+                    <div style={{width:28,height:28,borderRadius:"50%",background:i===0?"#f4d03f":i===1?"#bdc3c7":i===2?"#e59866":"#e3f2fd",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:900,fontSize:12,color:i<3?"#333":"#1565c0",flexShrink:0}}>{i+1}</div>
+                    <div style={{flex:1,fontWeight:700,color:"#1a237e"}}>{name}</div>
+                    <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:20,color:"#1565c0"}}>{stats.total}€</div>
+                  </div>
+                ))}
+              </div>
+              <div style={C.card}>
+                <h3 style={C.h3}>😈 Classement Chaboulat</h3>
+                {topChaboula.filter(([,s])=>s.chaboula>0).map(([name,stats],i) => (
+                  <div key={name} onClick={()=>{setSelectedPlayer(name);setActiveTab("Joueurs");}} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 0",borderBottom:"1px solid #f0f0f0",cursor:"pointer"}}>
+                    <div style={{width:28,height:28,borderRadius:"50%",background:i===0?"#f4d03f":"#e3f2fd",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:900,fontSize:12,color:i===0?"#333":"#1565c0",flexShrink:0}}>{i+1}</div>
+                    <div style={{flex:1,fontWeight:700,color:"#1a237e"}}>{name}</div>
+                    <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:20,color:"#e53935"}}>{stats.chaboula}×</div>
+                  </div>
+                ))}
+              </div>
+              <div style={{...C.card,gridColumn:"1/-1"}}>
+                <h3 style={C.h3}>📅 Matchs (du plus récent)</h3>
+                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(150px,1fr))",gap:10}}>
+                  {matchTotals.slice().sort((a,b)=>b.sortKey-a.sortKey).map(m => (
+                    <div key={m.fbId||m.id} style={{background:"#f0f6ff",borderRadius:12,padding:"12px 14px",borderLeft:"4px solid #1565c0"}}>
+                      <div style={{fontWeight:800,fontSize:11,color:"#0d47a1"}}>{m.match}</div>
+                      <div style={{fontSize:11,color:"#78909c",marginTop:2}}>{m.date}</div>
+                      <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:20,color:"#1565c0",marginTop:4}}>{m.total}€</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* PAIEMENTS */}
+        {activeTab==="Paiements" && (
+          <div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16,flexWrap:"wrap",gap:10}}>
+              <h2 style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:26,color:"#0d47a1",letterSpacing:1,margin:0}}>💳 Paiements</h2>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                {[
+                  {label:"Total dû",value:`${payments.reduce((s,p)=>s+p.total,0).toFixed(1)}€`,color:"#0d47a1"},
+                  {label:"Payé",value:`${payments.reduce((s,p)=>s+p.paid,0).toFixed(1)}€`,color:"#2e7d32"},
+                  {label:"Reste",value:`${payments.reduce((s,p)=>s+(p.total-p.paid),0).toFixed(1)}€`,color:"#c62828"},
+                ].map(c => (
+                  <div key={c.label} style={{background:"white",borderRadius:12,padding:"8px 12px",boxShadow:"0 2px 8px rgba(0,0,0,0.07)",textAlign:"center"}}>
+                    <div style={{fontSize:9,fontWeight:700,color:"#78909c",textTransform:"uppercase",letterSpacing:1}}>{c.label}</div>
+                    <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:18,color:c.color}}>{c.value}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              {payments.slice().sort((a,b)=>(b.total-b.paid)-(a.total-a.paid)).map(p => {
+                const reste = p.total - p.paid;
+                const pct = p.total > 0 ? Math.round((p.paid/p.total)*100) : 0;
+                const isPaid = reste <= 0;
+                return (
+                  <div key={p.player} style={{background:isPaid?"#f1f8e9":"white",borderRadius:14,padding:"14px 16px",boxShadow:"0 2px 8px rgba(0,0,0,0.06)",borderLeft:`4px solid ${isPaid?"#4caf50":"#1565c0"}`}}>
+                    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8,gap:8}}>
+                      <div style={{display:"flex",alignItems:"center",gap:10,flex:1,minWidth:0}}>
+                        <div style={{width:36,height:36,borderRadius:"50%",background:isPaid?"linear-gradient(135deg,#2e7d32,#66bb6a)":"linear-gradient(135deg,#1565c0,#42a5f5)",display:"flex",alignItems:"center",justifyContent:"center",color:"white",fontFamily:"'Bebas Neue',sans-serif",fontSize:18,flexShrink:0}}>{p.player[0]}</div>
+                        <div style={{minWidth:0}}>
+                          <div style={{fontWeight:800,color:"#0d47a1",fontSize:15,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.player}</div>
+                          <div style={{display:"flex",alignItems:"center",gap:4,marginTop:2}}>
+                            <div style={{width:70,height:5,background:"#e3f2fd",borderRadius:3,flexShrink:0}}>
+                              <div style={{width:`${Math.min(pct,100)}%`,height:"100%",background:isPaid?"#4caf50":"#1565c0",borderRadius:3}}/>
+                            </div>
+                            <span style={{fontSize:10,color:"#90a4ae",fontWeight:700}}>{pct}%</span>
+                            {isPaid&&<span style={{fontSize:10,color:"#2e7d32",fontWeight:800}}>✓</span>}
+                          </div>
+                        </div>
+                      </div>
+                      <div style={{display:"flex",gap:10,flexShrink:0}}>
+                        {[{l:"Dû",v:p.total,c:"#0d47a1"},{l:"Payé",v:p.paid,c:"#2e7d32"},{l:"Reste",v:isPaid?0:reste,c:isPaid?"#4caf50":"#c62828"}].map(({l,v,c}) => (
+                          <div key={l} style={{textAlign:"center"}}>
+                            <div style={{fontSize:9,color:"#90a4ae",fontWeight:700,textTransform:"uppercase"}}>{l}</div>
+                            <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:16,color:c}}>{v.toFixed(1)}€</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    {isAdmin && (
+                      <div style={{display:"flex",justifyContent:"flex-end"}}>
+                        {editingPayment===p.player ? (
+                          <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                            <input type="number" value={paymentInput} onChange={e=>setPaymentInput(e.target.value)}
+                              placeholder="Montant €" inputMode="decimal"
+                              style={{width:100,padding:"8px 10px",borderRadius:8,border:"2px solid #1565c0",fontSize:14,fontFamily:"'Nunito',sans-serif"}}/>
+                            <button onClick={()=>savePayment(p.player)} style={{background:"#1565c0",color:"white",border:"none",padding:"8px 14px",borderRadius:8,cursor:"pointer",fontWeight:800,fontSize:14}}>✓</button>
+                            <button onClick={()=>{setEditingPayment(null);setPaymentInput("");}} style={{background:"#eceff1",color:"#546e7a",border:"none",padding:"8px 12px",borderRadius:8,cursor:"pointer",fontSize:14}}>✕</button>
+                          </div>
+                        ) : (
+                          <button onClick={()=>{setEditingPayment(p.player);setPaymentInput("");}} disabled={isPaid}
+                            style={{background:isPaid?"#e8f5e9":"#1565c0",color:isPaid?"#4caf50":"white",border:"none",padding:"8px 18px",borderRadius:8,cursor:isPaid?"default":"pointer",fontWeight:800,fontSize:13}}>
+                            {isPaid?"✓ Soldé":"+ Enregistrer paiement"}
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* JOUEURS */}
+        {activeTab==="Joueurs" && (
+          <div>
+            {selectedPlayer ? (
+              <div>
+                <button onClick={()=>setSelectedPlayer(null)} style={{background:"#1565c0",color:"white",border:"none",padding:"8px 18px",borderRadius:8,cursor:"pointer",fontWeight:700,marginBottom:16}}>← Retour</button>
+                <div style={C.card}>
+                  <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:20}}>
+                    <div style={{width:54,height:54,borderRadius:"50%",background:"linear-gradient(135deg,#1565c0,#42a5f5)",display:"flex",alignItems:"center",justifyContent:"center",color:"white",fontFamily:"'Bebas Neue',sans-serif",fontSize:26,flexShrink:0}}>{selectedPlayer[0]}</div>
+                    <div>
+                      <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:28,color:"#0d47a1",letterSpacing:1}}>{selectedPlayer}</div>
+                      <div style={{color:"#78909c",fontSize:13}}>Total : <strong style={{color:"#1565c0"}}>{playerStats[selectedPlayer]?.total||0}€</strong> • Chaboulats : <strong style={{color:"#e53935"}}>{playerStats[selectedPlayer]?.chaboula||0}</strong></div>
+                    </div>
+                  </div>
+                  {(()=>{
+                    const stats = getPlayerInfractionStats(playerStats[selectedPlayer]?.entries||[]);
+                    if (!stats.length) return null;
+                    return (
+                      <div style={{marginBottom:16}}>
+                        <div style={{fontSize:11,fontWeight:800,color:"#78909c",textTransform:"uppercase",letterSpacing:1,marginBottom:8}}>Récurrences notables</div>
+                        <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
+                          {stats.map(([label,count]) => (
+                            <div key={label} style={{background:"#e3f2fd",borderRadius:20,padding:"4px 12px",fontSize:12,fontWeight:800,color:"#1565c0"}}>
+                              {label} <span style={{background:"#1565c0",color:"white",borderRadius:10,padding:"1px 7px",marginLeft:4,fontSize:11}}>{count}×</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })()}
+                  <h4 style={{color:"#0d47a1",fontFamily:"'Bebas Neue',sans-serif",fontSize:17,margin:"0 0 12px",letterSpacing:1}}>Historique</h4>
+                  {(()=>{
+                    const entries = (playerStats[selectedPlayer]?.entries||[]).filter(e=>e.amount>0);
+                    const byMatch = {};
+                    entries.forEach(e => {
+                      if (!byMatch[e.matchLabel]) byMatch[e.matchLabel] = {date:e.matchDate,sortKey:e.sortKey||0,entries:[]};
+                      byMatch[e.matchLabel].entries.push(e);
+                    });
+                    const sorted = Object.entries(byMatch).sort((a,b)=>(b[1].sortKey||0)-(a[1].sortKey||0));
+                    if (!sorted.length) return <div style={{color:"#90a4ae",padding:20,textAlign:"center"}}>Aucune infraction</div>;
+                    return sorted.map(([matchLabel,{date,entries:mE}]) => (
+                      <div key={matchLabel} style={{marginBottom:12}}>
+                        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+                          <div style={{fontSize:11,fontWeight:800,color:"#0d47a1",background:"#e3f2fd",borderRadius:8,padding:"3px 10px"}}>{matchLabel}</div>
+                          <div style={{fontSize:11,color:"#90a4ae"}}>{date}</div>
+                          <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:16,color:"#1565c0",marginLeft:"auto"}}>{mE.reduce((s,e)=>s+e.amount,0)}€</div>
+                        </div>
+                        {mE.map((e,i) => (
+                          <div key={i} style={{display:"flex",alignItems:"center",padding:"8px 12px",background:"#f8fbff",borderRadius:8,marginBottom:4,borderLeft:`3px solid ${e.amount>10?"#e53935":e.amount>5?"#fb8c00":"#1565c0"}`}}>
+                            <div style={{fontSize:13,color:"#546e7a",flex:1}}>{e.detail}</div>
+                            <div style={{display:"flex",alignItems:"center",gap:8,flexShrink:0}}>
+                              <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:17,color:e.amount>10?"#e53935":e.amount>5?"#fb8c00":"#1565c0"}}>{e.amount}€</div>
+                              {isAdmin && <button onClick={()=>deleteInfraction(e.matchId,e.entryIndex)} style={{background:"#ffebee",color:"#e53935",border:"none",width:26,height:26,borderRadius:6,cursor:"pointer",fontSize:12,display:"flex",alignItems:"center",justifyContent:"center"}}>🗑</button>}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ));
+                  })()}
+                </div>
+              </div>
+            ) : (
+              <div>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16,gap:10,flexWrap:"wrap"}}>
+                  <h2 style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:26,color:"#0d47a1",letterSpacing:1,margin:0}}>👥 Joueurs</h2>
+                  {isAdmin && <button onClick={()=>setShowAddInfraction(!showAddInfraction)} style={{background:"#1565c0",color:"white",border:"none",padding:"10px 18px",borderRadius:10,cursor:"pointer",fontWeight:800,fontSize:13}}>+ Infraction</button>}
+                </div>
+                {isAdmin && showAddInfraction && (
+                  <div style={{...C.card,marginBottom:16}}>
+                    <h3 style={C.h3}>Ajouter une infraction</h3>
+                    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:12}}>
+                      <div>
+                        <label style={{fontSize:11,fontWeight:700,color:"#78909c",display:"block",marginBottom:4}}>JOUEUR</label>
+                        <select value={newInfraction.player} onChange={e=>setNewInfraction(p=>({...p,player:e.target.value}))} style={{width:"100%",padding:"10px",borderRadius:8,border:"2px solid #e3f2fd",fontSize:14}}>
+                          <option value="">Choisir</option>
+                          {players.map(p=><option key={p}>{p}</option>)}
+                          <option value="__new__">+ Nouveau</option>
+                        </select>
+                        {newInfraction.player==="__new__" && <input placeholder="Nom" onChange={e=>setNewInfraction(p=>({...p,player:e.target.value}))} style={{width:"100%",padding:"10px",borderRadius:8,border:"2px solid #e3f2fd",fontSize:14,marginTop:8,boxSizing:"border-box"}}/>}
+                      </div>
+                      <div>
+                        <label style={{fontSize:11,fontWeight:700,color:"#78909c",display:"block",marginBottom:4}}>MATCH</label>
+                        <select value={newInfraction.matchLabel} onChange={e=>setNewInfraction(p=>({...p,matchLabel:e.target.value}))} style={{width:"100%",padding:"10px",borderRadius:8,border:"2px solid #e3f2fd",fontSize:14}}>
+                          <option value="">Hors match</option>
+                          {matches.map(m=><option key={m.fbId||m.id} value={m.match}>{m.match}</option>)}
+                          <option value="__new__">+ Nouveau match</option>
+                        </select>
+                        {newInfraction.matchLabel==="__new__" && <input placeholder="Nom du match" onChange={e=>setNewInfraction(p=>({...p,matchLabel:e.target.value}))} style={{width:"100%",padding:"10px",borderRadius:8,border:"2px solid #e3f2fd",fontSize:14,marginTop:8,boxSizing:"border-box"}}/>}
+                      </div>
+                      <div>
+                        <label style={{fontSize:11,fontWeight:700,color:"#78909c",display:"block",marginBottom:4}}>RÈGLE</label>
+                        <select value={newInfraction.ruleId} onChange={e=>setNewInfraction(p=>({...p,ruleId:e.target.value}))} style={{width:"100%",padding:"10px",borderRadius:8,border:"2px solid #e3f2fd",fontSize:14}}>
+                          <option value="">Personnalisée</option>
+                          {rules.map(r=><option key={r.id} value={r.id}>{r.name} ({r.amount}€)</option>)}
+                        </select>
+                      </div>
+                      {!newInfraction.ruleId && <>
+                        <div>
+                          <label style={{fontSize:11,fontWeight:700,color:"#78909c",display:"block",marginBottom:4}}>DÉTAIL</label>
+                          <input value={newInfraction.customDetail} onChange={e=>setNewInfraction(p=>({...p,customDetail:e.target.value}))} placeholder="Description" style={{width:"100%",padding:"10px",borderRadius:8,border:"2px solid #e3f2fd",fontSize:14,boxSizing:"border-box"}}/>
+                        </div>
+                        <div>
+                          <label style={{fontSize:11,fontWeight:700,color:"#78909c",display:"block",marginBottom:4}}>MONTANT (€)</label>
+                          <input type="number" inputMode="decimal" value={newInfraction.customAmount} onChange={e=>setNewInfraction(p=>({...p,customAmount:e.target.value}))} placeholder="0" style={{width:"100%",padding:"10px",borderRadius:8,border:"2px solid #e3f2fd",fontSize:14,boxSizing:"border-box"}}/>
+                        </div>
+                      </>}
+                    </div>
+                    <div style={{display:"flex",gap:10,marginTop:14}}>
+                      <button onClick={addInfraction} style={{background:"#1565c0",color:"white",border:"none",padding:"10px 22px",borderRadius:8,cursor:"pointer",fontWeight:800}}>Ajouter</button>
+                      <button onClick={()=>setShowAddInfraction(false)} style={{background:"#eceff1",color:"#546e7a",border:"none",padding:"10px 18px",borderRadius:8,cursor:"pointer",fontWeight:700}}>Annuler</button>
+                    </div>
+                  </div>
+                )}
+                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(150px,1fr))",gap:12}}>
+                  {players.sort((a,b)=>(playerStats[b]?.total||0)-(playerStats[a]?.total||0)).map(player => (
+                    <div key={player} onClick={()=>setSelectedPlayer(player)} style={{...C.card,cursor:"pointer",borderTop:"4px solid #1565c0",padding:16}}
+                      onMouseEnter={e=>e.currentTarget.style.transform="translateY(-2px)"}
+                      onMouseLeave={e=>e.currentTarget.style.transform="translateY(0)"}>
+                      <div style={{width:40,height:40,borderRadius:"50%",background:"linear-gradient(135deg,#1565c0,#42a5f5)",display:"flex",alignItems:"center",justifyContent:"center",color:"white",fontFamily:"'Bebas Neue',sans-serif",fontSize:20,marginBottom:8}}>{player[0]}</div>
+                      <div style={{fontWeight:800,color:"#0d47a1",fontSize:14}}>{player}</div>
+                      <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:22,color:"#1565c0"}}>{playerStats[player]?.total||0}€</div>
+                      {playerStats[player]?.chaboula>0 && <div style={{fontSize:11,color:"#e53935",fontWeight:700,marginTop:4}}>😈 {playerStats[player].chaboula}×</div>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* RÈGLES */}
+        {activeTab==="Règles" && (
+          <div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+              <h2 style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:26,color:"#0d47a1",letterSpacing:1,margin:0}}>📋 Règles</h2>
+              {isAdmin && <button onClick={()=>setShowAddRule(!showAddRule)} style={{background:"#1565c0",color:"white",border:"none",padding:"10px 18px",borderRadius:10,cursor:"pointer",fontWeight:800,fontSize:13}}>+ Règle</button>}
+            </div>
+            {isAdmin && showAddRule && (
+              <div style={{...C.card,marginBottom:16}}>
+                <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+                  <input value={newRule.name} onChange={e=>setNewRule(p=>({...p,name:e.target.value}))} placeholder="Nom de la règle" style={{flex:1,minWidth:160,padding:"10px",borderRadius:8,border:"2px solid #e3f2fd",fontSize:14}}/>
+                  <input type="number" inputMode="decimal" value={newRule.amount} onChange={e=>setNewRule(p=>({...p,amount:e.target.value}))} placeholder="€" style={{width:70,padding:"10px",borderRadius:8,border:"2px solid #e3f2fd",fontSize:14}}/>
+                  <button onClick={addRule} style={{background:"#1565c0",color:"white",border:"none",padding:"10px 18px",borderRadius:8,cursor:"pointer",fontWeight:800}}>Ajouter</button>
+                  <button onClick={()=>setShowAddRule(false)} style={{background:"#eceff1",color:"#546e7a",border:"none",padding:"10px 12px",borderRadius:8,cursor:"pointer"}}>✕</button>
+                </div>
+              </div>
+            )}
+            {isAdmin && editingRule && (
+              <div style={{...C.card,marginBottom:16}}>
+                <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+                  <input value={editingRule.name} onChange={e=>setEditingRule(p=>({...p,name:e.target.value}))} style={{flex:1,minWidth:160,padding:"10px",borderRadius:8,border:"2px solid #1565c0",fontSize:14}}/>
+                  <input type="number" inputMode="decimal" value={editingRule.amount} onChange={e=>setEditingRule(p=>({...p,amount:parseFloat(e.target.value)}))} style={{width:70,padding:"10px",borderRadius:8,border:"2px solid #1565c0",fontSize:14}}/>
+                  <button onClick={saveRule} style={{background:"#1565c0",color:"white",border:"none",padding:"10px 18px",borderRadius:8,cursor:"pointer",fontWeight:800}}>Sauver</button>
+                  <button onClick={()=>setEditingRule(null)} style={{background:"#eceff1",color:"#546e7a",border:"none",padding:"10px 12px",borderRadius:8,cursor:"pointer"}}>✕</button>
+                </div>
+              </div>
+            )}
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(250px,1fr))",gap:10}}>
+              {rules.map(rule => (
+                <div key={rule.id} style={{background:"white",borderRadius:14,padding:"12px 16px",boxShadow:"0 2px 8px rgba(0,0,0,0.06)",display:"flex",alignItems:"center",borderLeft:"4px solid #1565c0"}}>
+                  <div style={{flex:1,fontWeight:700,color:"#1a237e",fontSize:13}}>{rule.name}</div>
+                  <div style={{display:"flex",alignItems:"center",gap:6}}>
+                    <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:20,color:"#1565c0"}}>{rule.amount}€</div>
+                    {isAdmin && <>
+                      <button onClick={()=>setEditingRule(rule)} style={{background:"#e3f2fd",color:"#1565c0",border:"none",width:28,height:28,borderRadius:6,cursor:"pointer",fontSize:13,display:"flex",alignItems:"center",justifyContent:"center"}}>✏️</button>
+                      <button onClick={()=>deleteRule(rule.id)} style={{background:"#ffebee",color:"#e53935",border:"none",width:28,height:28,borderRadius:6,cursor:"pointer",fontSize:13,display:"flex",alignItems:"center",justifyContent:"center"}}>🗑</button>
+                    </>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* CALENDRIER */}
+        {activeTab==="Calendrier" && (
+          <div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+              <h2 style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:26,color:"#0d47a1",letterSpacing:1,margin:0}}>📅 Calendrier</h2>
+              {isAdmin && <button onClick={()=>setShowAddCalendar(!showAddCalendar)} style={{background:"#1565c0",color:"white",border:"none",padding:"10px 18px",borderRadius:10,cursor:"pointer",fontWeight:800,fontSize:13}}>+ Match</button>}
+            </div>
+            {isAdmin && showAddCalendar && (
+              <div style={{...C.card,marginBottom:16}}>
+                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:12}}>
+                  {[{label:"DATE",key:"date",placeholder:"ex: Avr 2025"},{label:"ADVERSAIRE",key:"opponent",placeholder:"Nom"},{label:"LIEU",key:"location",placeholder:"Ville"}].map(f=>(
+                    <div key={f.key}>
+                      <label style={{fontSize:11,fontWeight:700,color:"#78909c",display:"block",marginBottom:4}}>{f.label}</label>
+                      <input value={newCalMatch[f.key]} onChange={e=>setNewCalMatch(p=>({...p,[f.key]:e.target.value}))} placeholder={f.placeholder} style={{width:"100%",padding:"10px",borderRadius:8,border:"2px solid #e3f2fd",fontSize:14,boxSizing:"border-box"}}/>
+                    </div>
+                  ))}
+                  <div>
+                    <label style={{fontSize:11,fontWeight:700,color:"#78909c",display:"block",marginBottom:4}}>DOM / EXT</label>
+                    <select value={newCalMatch.home} onChange={e=>setNewCalMatch(p=>({...p,home:e.target.value==="true"}))} style={{width:"100%",padding:"10px",borderRadius:8,border:"2px solid #e3f2fd",fontSize:14}}>
+                      <option value="true">Domicile</option><option value="false">Extérieur</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label style={{fontSize:11,fontWeight:700,color:"#78909c",display:"block",marginBottom:4}}>ÉQUIPE</label>
+                    <select value={newCalMatch.team} onChange={e=>setNewCalMatch(p=>({...p,team:e.target.value}))} style={{width:"100%",padding:"10px",borderRadius:8,border:"2px solid #e3f2fd",fontSize:14}}>
+                      <option value="Éq1">Équipe 1</option><option value="Éq2">Équipe 2</option>
+                    </select>
+                  </div>
+                </div>
+                <div style={{display:"flex",gap:10,marginTop:14}}>
+                  <button onClick={addCalendarMatch} style={{background:"#1565c0",color:"white",border:"none",padding:"10px 22px",borderRadius:8,cursor:"pointer",fontWeight:800}}>Ajouter</button>
+                  <button onClick={()=>setShowAddCalendar(false)} style={{background:"#eceff1",color:"#546e7a",border:"none",padding:"10px 18px",borderRadius:8,cursor:"pointer",fontWeight:700}}>Annuler</button>
+                </div>
+              </div>
+            )}
+            <div style={{display:"flex",flexDirection:"column",gap:10}}>
+              {calendar.slice().sort((a,b)=>b.sortKey-a.sortKey).map(m => (
+                <div key={m.fbId||m.id} style={{background:"white",borderRadius:14,padding:"12px 16px",boxShadow:"0 2px 8px rgba(0,0,0,0.06)",display:"flex",alignItems:"center",gap:14,borderLeft:`4px solid ${m.home?"#1565c0":"#42a5f5"}`}}>
+                  <div style={{width:38,height:38,borderRadius:"50%",background:m.team==="Éq2"?"#e3f2fd":"#1565c0",display:"flex",alignItems:"center",justifyContent:"center",color:m.team==="Éq2"?"#1565c0":"white",fontFamily:"'Bebas Neue',sans-serif",fontSize:12,flexShrink:0}}>{m.team}</div>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontWeight:800,color:"#0d47a1",fontSize:14}}>vs {m.opponent}</div>
+                    <div style={{fontSize:12,color:"#78909c",marginTop:2}}>{m.date} • {m.location} • {m.home?"🏠":"✈️"}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* STATS */}
+        {activeTab==="Stats" && (
+          <div>
+            <h2 style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:26,color:"#0d47a1",letterSpacing:1,margin:"0 0 16px"}}>📊 Stats</h2>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(280px,1fr))",gap:16}}>
+              <div style={{...C.card,gridColumn:"1/-1"}}>
+                <h3 style={C.h3}>💰 Total par joueur</h3>
+                {Object.entries(playerStats).sort((a,b)=>b[1].total-a[1].total).map(([name,stats]) => {
+                  const maxTotal = Math.max(1,...Object.values(playerStats).map(s=>s.total));
+                  const pct = Math.round((stats.total/maxTotal)*100);
+                  return (
+                    <div key={name} style={{marginBottom:10,cursor:"pointer"}} onClick={()=>{setSelectedPlayer(name);setActiveTab("Joueurs");}}>
+                      <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
+                        <span style={{fontWeight:700,color:"#1a237e",fontSize:14}}>{name}</span>
+                        <span style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:17,color:"#1565c0"}}>{stats.total}€</span>
+                      </div>
+                      <div style={{background:"#e3f2fd",borderRadius:4,height:7}}>
+                        <div style={{width:`${pct}%`,height:"100%",background:"linear-gradient(90deg,#1565c0,#42a5f5)",borderRadius:4}}/>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div style={C.card}>
+                <h3 style={C.h3}>😈 Classement Chaboulat</h3>
+                {Object.entries(playerStats).sort((a,b)=>b[1].chaboula-a[1].chaboula).filter(([,s])=>s.chaboula>0).map(([name,stats],i) => (
+                  <div key={name} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0",borderBottom:"1px solid #f0f0f0"}}>
+                    <div style={{width:26,height:26,borderRadius:"50%",background:i===0?"#f4d03f":"#e3f2fd",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:900,fontSize:12,color:i===0?"#333":"#1565c0",flexShrink:0}}>{i+1}</div>
+                    <div style={{flex:1,fontWeight:700,color:"#1a237e"}}>{name}</div>
+                    <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:20,color:"#e53935"}}>{stats.chaboula}×</div>
+                  </div>
+                ))}
+              </div>
+              <div style={C.card}>
+                <h3 style={C.h3}>🔥 Matchs par montant</h3>
+                {matchTotals.slice().sort((a,b)=>b.total-a.total).map((m,i) => (
+                  <div key={m.fbId||m.id} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0",borderBottom:"1px solid #f0f0f0"}}>
+                    <div style={{width:26,height:26,borderRadius:"50%",background:i===0?"#f4d03f":"#e3f2fd",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:900,fontSize:11,color:i===0?"#333":"#1565c0",flexShrink:0}}>{i+1}</div>
+                    <div style={{flex:1,fontWeight:600,color:"#1a237e",fontSize:13}}>{m.match}</div>
+                    <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:19,color:"#1565c0"}}>{m.total}€</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
       </div>
-      
-      {/* Ton code continue ainsi jusqu'à la fin sans changement... */}
     </div>
   );
 }
