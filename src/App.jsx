@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect } from "react";
 import { db, auth } from "./firebase";
 import {
-  collection, doc, onSnapshot, setDoc, updateDoc, getDoc
+  collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, writeBatch, getDocs
 } from "firebase/firestore";
 import {
   createUserWithEmailAndPassword, signInWithEmailAndPassword,
@@ -10,38 +10,77 @@ import {
 import { INITIAL_RULES, INITIAL_PAYMENTS, INITIAL_CALENDAR } from "./data";
 import { HISTORICAL_MATCHES } from "./matches";
 
-const NAV_ITEMS = ["Dashboard", "Paiements", "Joueurs", "Règles", "Calendrier", "Stats"];
+function getPlayerInfractionStats(entries) {
+  const counts = {};
+  entries.forEach(e => {
+    if (!e.detail || e.detail === "Rien" || e.amount === 0) return;
+    const d = e.detail.toLowerCase();
+    [
+      {key:"mitraillette",label:"Mitraillette"},
+      {key:"sortie veille",label:"Sortie veille"},
+      {key:"chaboula",label:"Chaboulat"},
+      {key:"penalty raté",label:"Penalty raté"},
+      {key:"contre-attaque ratée",label:"Contre-attaque ratée"},
+      {key:"relance ratée",label:"Relance ratée"},
+      {key:"tir fantaisie raté",label:"Tir fantaisie raté"},
+      {key:"vomi",label:"Vomi en soirée"},
+      {key:"retard",label:"Retard"},
+      {key:"carton rouge",label:"Carton rouge"},
+      {key:"défaite",label:"Défaite collective"},
+      {key:"fantôme",label:"Fantôme"},
+    ].forEach(({key,label}) => {
+      if (d.includes(key)) counts[label] = (counts[label]||0)+1;
+    });
+  });
+  return Object.entries(counts).filter(([,v])=>v>=2).sort((a,b)=>b[1]-a[1]);
+}
+
+const NAV_ITEMS = ["Dashboard","Paiements","Joueurs","Règles","Calendrier","Stats"];
 
 export default function App() {
+  // Core data
   const [rules, setRules] = useState(INITIAL_RULES);
   const [matches, setMatches] = useState(HISTORICAL_MATCHES);
   const [calendar, setCalendar] = useState(INITIAL_CALENDAR);
   const [payments, setPayments] = useState(INITIAL_PAYMENTS);
+  // UI state
   const [activeTab, setActiveTab] = useState("Dashboard");
+  const [selectedPlayer, setSelectedPlayer] = useState(null);
+  const [editingRule, setEditingRule] = useState(null);
+  const [newRule, setNewRule] = useState({name:"",amount:""});
+  const [showAddRule, setShowAddRule] = useState(false);
+  const [showAddInfraction, setShowAddInfraction] = useState(false);
+  const [showAddCalendar, setShowAddCalendar] = useState(false);
+  const [newInfraction, setNewInfraction] = useState({player:"",ruleId:"",customDetail:"",customAmount:"",matchLabel:""});
+  const [newCalMatch, setNewCalMatch] = useState({date:"",opponent:"",home:true,location:"",team:"Éq1"});
+  const [editingPayment, setEditingPayment] = useState(null);
+  const [paymentInput, setPaymentInput] = useState("");
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState(null);
-  
-  // Auth & Admin
+  // Auth state
   const [user, setUser] = useState(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [authMode, setAuthMode] = useState("login");
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
   const [authError, setAuthError] = useState("");
+  const [authLoading, setAuthLoading] = useState(false);
 
-  // Modales Admin
-  const [showAddInfraction, setShowAddInfraction] = useState(false);
-  const [newInfraction, setNewInfraction] = useState({player:"", ruleId:""});
+  const showToast = (msg) => {
+    setToast(msg);
+    setTimeout(() => setToast(null), 2500);
+  };
 
-  const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(null), 2500); };
-
-  // --- LOGIQUE AUTH & ADMIN ---
+  // Auth listener
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
       setUser(u);
       if (u) {
-        const userDoc = await getDoc(doc(db, "users", u.uid));
-        setIsAdmin(userDoc.exists() && userDoc.data().role === "admin");
+        try {
+          const adminSnap = await getDocs(collection(db, "admins"));
+          const adminEmails = adminSnap.docs.map(d => d.id);
+          setIsAdmin(adminEmails.includes(u.email));
+        } catch(e) { setIsAdmin(false); }
       } else {
         setIsAdmin(false);
       }
@@ -49,182 +88,349 @@ export default function App() {
     return () => unsub();
   }, []);
 
-  // --- SYNC FIREBASE ---
-  useEffect(() => {
-    const unsubRules = onSnapshot(collection(db, "rules"), s => !s.empty && setRules(s.docs.map(d => ({...d.data(), id: d.id}))));
-    const unsubMatches = onSnapshot(collection(db, "matches"), s => {
-      if (!s.empty) setMatches(s.docs.map(d => ({...d.data(), fbId: d.id})).sort((a,b) => (b.sortKey||0)-(a.sortKey||0)));
-    });
-    const unsubPayments = onSnapshot(collection(db, "payments"), s => !s.empty && setPayments(s.docs.map(d => ({...d.data(), fbId: d.id}))));
-    setLoading(false);
-    return () => { unsubRules(); unsubMatches(); unsubPayments(); };
-  }, []);
-
-  // --- CALCULS STATS ---
-  const allEntries = useMemo(() => matches.flatMap(m => (m.entries||[]).map(e => ({...e, mLabel: m.match}))), [matches]);
-  const playerStats = useMemo(() => {
-    const s = {};
-    allEntries.forEach(e => {
-      if(!s[e.player]) s[e.player] = {total:0, chaboula:0};
-      s[e.player].total += e.amount;
-      if(/chaboula/i.test(e.detail)) s[e.player].chaboula++;
-    });
-    return s;
-  }, [allEntries]);
-
-  const totalCaisse = useMemo(() => payments.reduce((s,p) => s+p.total, 0), [payments]);
-  const topBadBoys = useMemo(() => Object.entries(playerStats).sort((a,b) => b[1].total - a[1].total).slice(0,5), [playerStats]);
-  const topChaboula = useMemo(() => Object.entries(playerStats).sort((a,b) => b[1].chaboula - a[1].chaboula).slice(0,5), [playerStats]);
-
   const handleAuth = async () => {
     setAuthError("");
+    setAuthLoading(true);
     try {
       if (authMode === "login") {
         await signInWithEmailAndPassword(auth, authEmail, authPassword);
       } else {
-        const res = await createUserWithEmailAndPassword(auth, authEmail, authPassword);
-        await setDoc(doc(db, "users", res.user.uid), { email: authEmail, role: "player" });
+        await createUserWithEmailAndPassword(auth, authEmail, authPassword);
       }
-    } catch(e) { setAuthError("Erreur : " + e.message); }
+      setAuthEmail(""); setAuthPassword("");
+    } catch(e) {
+      const msgs = {
+        "auth/user-not-found": "Email introuvable",
+        "auth/wrong-password": "Mot de passe incorrect",
+        "auth/email-already-in-use": "Email déjà utilisé",
+        "auth/weak-password": "Mot de passe trop court (6 car. min)",
+        "auth/invalid-email": "Email invalide",
+        "auth/invalid-credential": "Email ou mot de passe incorrect",
+      };
+      setAuthError(msgs[e.code] || "Erreur de connexion");
+    }
+    setAuthLoading(false);
   };
 
+  // Firebase real-time listeners
+  useEffect(() => {
+    let loaded = 0;
+    const checkDone = () => { loaded++; if (loaded >= 4) setLoading(false); };
+    const unsubRules = onSnapshot(collection(db, "rules"), snap => {
+      if (!snap.empty) setRules(snap.docs.map(d => ({...d.data(), id: d.id})));
+      checkDone();
+    });
+    const unsubMatches = onSnapshot(collection(db, "matches"), snap => {
+      if (!snap.empty) {
+        const fbMatches = snap.docs.map(d => ({...d.data(), fbId: d.id}));
+        setMatches(fbMatches.sort((a,b) => (b.sortKey||0)-(a.sortKey||0)));
+      }
+      checkDone();
+    });
+    const unsubPayments = onSnapshot(collection(db, "payments"), snap => {
+      if (!snap.empty) setPayments(snap.docs.map(d => ({...d.data(), fbId: d.id})));
+      checkDone();
+    });
+    const unsubCal = onSnapshot(collection(db, "calendar"), snap => {
+      if (!snap.empty) setCalendar(snap.docs.map(d => ({...d.data(), fbId: d.id})));
+      checkDone();
+    });
+    return () => { unsubRules(); unsubMatches(); unsubPayments(); unsubCal(); };
+  }, []);
+
+  // Init Firebase if empty
+  useEffect(() => {
+    const initIfEmpty = async () => {
+      const rulesSnap = await getDocs(collection(db, "rules"));
+      if (rulesSnap.empty) {
+        const batch = writeBatch(db);
+        INITIAL_RULES.forEach(r => batch.set(doc(db, "rules", String(r.id)), r));
+        HISTORICAL_MATCHES.forEach(m => batch.set(doc(db, "matches", String(m.id)), m));
+        INITIAL_PAYMENTS.forEach(p => batch.set(doc(db, "payments", p.player), p));
+        INITIAL_CALENDAR.forEach(c => batch.set(doc(db, "calendar", String(c.id)), c));
+        await batch.commit();
+      }
+    };
+    initIfEmpty();
+  }, []);
+
+  // Computed data
+  const allEntries = useMemo(() =>
+    matches.flatMap(m => (m.entries||[]).map((e,idx) => ({
+      ...e, matchLabel:m.match, matchDate:m.date,
+      matchId: m.fbId||String(m.id), sortKey:m.sortKey||0, entryIndex:idx
+    }))),
+    [matches]
+  );
+
+  const playerStats = useMemo(() => {
+    const stats = {};
+    allEntries.forEach(e => {
+      const p = e.player;
+      if (!stats[p]) stats[p] = {total:0, count:0, chaboula:0, entries:[]};
+      stats[p].total += e.amount;
+      if (e.amount > 0) stats[p].count++;
+      if (e.detail && /chaboula/i.test(e.detail)) stats[p].chaboula++;
+      stats[p].entries.push(e);
+    });
+    return stats;
+  }, [allEntries]);
+
+  // Sync payment totals automatically when infractions change
+  useEffect(() => {
+    if (!isAdmin || Object.keys(playerStats).length === 0 || payments.length === 0) return;
+    payments.forEach(async p => {
+      const newTotal = playerStats[p.player]?.total;
+      if (newTotal !== undefined && Math.abs(newTotal - p.total) > 0.01) {
+        try {
+          await updateDoc(doc(db, "payments", p.fbId || p.player), {total: newTotal});
+        } catch(e) {}
+      }
+    });
+  }, [playerStats, isAdmin]);
+
+  const players = useMemo(() => Object.keys(playerStats).sort(), [playerStats]);
+  const totalCaisse = useMemo(() => payments.reduce((s,p) => s+p.total, 0), [payments]);
+  const matchTotals = useMemo(() => matches.map(m => ({
+    ...m, total: (m.entries||[]).reduce((s,e) => s+e.amount, 0)
+  })), [matches]);
+  const topOffenders = useMemo(() => Object.entries(playerStats).sort((a,b) => b[1].total-a[1].total).slice(0,5), [playerStats]);
+  const topChaboula = useMemo(() => Object.entries(playerStats).sort((a,b) => b[1].chaboula-a[1].chaboula).slice(0,5), [playerStats]);
+
+  // Actions
   const addInfraction = async () => {
+    if (!newInfraction.player || (!newInfraction.ruleId && !newInfraction.customDetail)) return;
     const rule = rules.find(r => String(r.id) === String(newInfraction.ruleId));
-    if (!rule || !newInfraction.player || !matches[0]) return;
-    const newEntries = [...(matches[0].entries||[]), {player: newInfraction.player, amount: rule.amount, detail: rule.name}];
-    await updateDoc(doc(db, "matches", matches[0].fbId), {entries: newEntries});
-    showToast("Amende enregistrée ! 💸");
+    const amount = newInfraction.ruleId ? (rule?.amount||0) : parseFloat(newInfraction.customAmount)||0;
+    const detail = newInfraction.ruleId ? rule?.name : newInfraction.customDetail;
+    const matchLabel = newInfraction.matchLabel || "Hors match";
+    const existing = matches.find(m => m.match === matchLabel);
+    if (existing) {
+      const fbId = existing.fbId || String(existing.id);
+      const newEntries = [...(existing.entries||[]), {player:newInfraction.player, amount, detail}];
+      await updateDoc(doc(db, "matches", fbId), {entries: newEntries});
+    } else {
+      const newMatch = {
+        id: Date.now(), match: matchLabel,
+        date: new Date().toLocaleDateString("fr-FR",{month:"short",year:"numeric"}),
+        sortKey: 999, entries: [{player:newInfraction.player, amount, detail}]
+      };
+      await setDoc(doc(db, "matches", String(newMatch.id)), newMatch);
+    }
+    setNewInfraction({player:"",ruleId:"",customDetail:"",customAmount:"",matchLabel:""});
     setShowAddInfraction(false);
+    showToast("Infraction ajoutée ✓");
   };
 
-  if (loading) return null;
+  const deleteInfraction = async (matchId, entryIndex) => {
+    const m = matches.find(x => x.fbId === matchId || String(x.id) === String(matchId));
+    if (!m) return;
+    const newEntries = (m.entries||[]).filter((_,i) => i !== entryIndex);
+    const fbId = m.fbId || String(m.id);
+    await updateDoc(doc(db, "matches", fbId), {entries: newEntries});
+    showToast("Infraction supprimée");
+  };
+
+  const addRule = async () => {
+    if (!newRule.name || !newRule.amount) return;
+    const r = {id: Date.now(), name: newRule.name, amount: parseFloat(newRule.amount)};
+    await setDoc(doc(db, "rules", String(r.id)), r);
+    setNewRule({name:"",amount:""}); setShowAddRule(false);
+    showToast("Règle ajoutée ✓");
+  };
+
+  const saveRule = async () => {
+    await updateDoc(doc(db, "rules", String(editingRule.id)), editingRule);
+    setEditingRule(null);
+    showToast("Règle modifiée ✓");
+  };
+
+  const deleteRule = async (id) => {
+    await deleteDoc(doc(db, "rules", String(id)));
+    showToast("Règle supprimée");
+  };
+
+  const addCalendarMatch = async () => {
+    if (!newCalMatch.opponent || !newCalMatch.date) return;
+    const m = {...newCalMatch, id: Date.now(), sortKey: 999, home: newCalMatch.home === true || newCalMatch.home === "true"};
+    await setDoc(doc(db, "calendar", String(m.id)), m);
+    setNewCalMatch({date:"",opponent:"",home:true,location:"",team:"Éq1"});
+    setShowAddCalendar(false);
+    showToast("Match ajouté ✓");
+  };
+
+  const savePayment = async (playerName) => {
+    const added = parseFloat(paymentInput) || 0;
+    const p = payments.find(x => x.player === playerName);
+    if (!p) return;
+    const newPaid = Math.min(p.paid + added, p.total);
+    await updateDoc(doc(db, "payments", p.fbId||playerName), {paid: newPaid});
+    setEditingPayment(null); setPaymentInput("");
+    showToast("Paiement enregistré ✓");
+  };
+
+  const C = {
+    card: {background:"white", borderRadius:16, padding:20, boxShadow:"0 2px 12px rgba(0,0,0,0.07)"},
+    h3: {margin:"0 0 16px", color:"#0d47a1", fontFamily:"'Bebas Neue',sans-serif", fontSize:20, letterSpacing:1},
+  };
+
+  if (loading) return (
+    <div style={{minHeight:"100vh",background:"#f0f6ff",display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:16}}>
+      <div style={{width:80,height:80,borderRadius:"50%",background:"#1565c0",display:"flex",alignItems:"center",justifyContent:"center",color:"white",fontSize:36}}>🤾</div>
+      <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:24,color:"#0d47a1",letterSpacing:2}}>Chargement...</div>
+    </div>
+  );
 
   if (!user) return (
-    <div style={{minHeight:"100vh", background:"#1565c0", display:"flex", alignItems:"center", justifyContent:"center", padding:20}}>
-      <div style={{background:"white", padding:40, borderRadius:30, width:"100%", maxWidth:400, textAlign:"center", boxShadow:"0 20px 40px rgba(0,0,0,0.2)"}}>
-        <h2 style={{margin:0, color:"#1565c0", fontSize:28, fontWeight:900}}>HBC LANGEAC</h2>
-        <p style={{fontSize:14, color:"#666", marginBottom:30}}>{authMode === "login" ? "Connexion" : "Créer un compte"}</p>
-        <input type="email" placeholder="Email" value={authEmail} onChange={e=>setAuthEmail(e.target.value)} style={{width:"100%", padding:15, marginBottom:10, borderRadius:15, border:"1px solid #eee", background:"#f9f9f9"}} />
-        <input type="password" placeholder="Mot de passe" value={authPassword} onChange={e=>setAuthPassword(e.target.value)} style={{width:"100%", padding:15, marginBottom:20, borderRadius:15, border:"1px solid #eee", background:"#f9f9f9"}} />
-        {authError && <p style={{color:"red", fontSize:12, marginBottom:10}}>{authError}</p>}
-        <button onClick={handleAuth} style={{width:"100%", padding:16, background:"#1565c0", color:"white", border:"none", borderRadius:15, fontWeight:800, fontSize:16}}>{authMode === "login" ? "SE CONNECTER" : "S'INSCRIRE"}</button>
-        <p style={{marginTop:25, fontSize:14, color:"#1565c0", cursor:"pointer", fontWeight:700}} onClick={() => setAuthMode(authMode === "login" ? "register" : "login")}>
-          {authMode === "login" ? "Nouveau ? Créer un compte" : "Déjà inscrit ? Connexion"}
-        </p>
+    <div style={{minHeight:"100vh",background:"linear-gradient(135deg,#1565c0,#0d47a1)",display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+      <div style={{background:"white",borderRadius:20,padding:32,width:"100%",maxWidth:380,boxShadow:"0 20px 60px rgba(0,0,0,0.3)"}}>
+        <div style={{textAlign:"center",marginBottom:28}}>
+          <div style={{width:72,height:72,borderRadius:"50%",background:"linear-gradient(135deg,#1565c0,#42a5f5)",display:"flex",alignItems:"center",justifyContent:"center",color:"white",fontSize:32,marginBottom:12}}>🤾</div>
+          <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:26,color:"#0d47a1",letterSpacing:2}}>HBC LANGEAC</div>
+          <div style={{color:"#78909c",fontSize:12,fontWeight:700,textTransform:"uppercase",letterSpacing:1}}>Caisse Noire</div>
+        </div>
+        <div style={{display:"flex",background:"#f0f6ff",borderRadius:10,padding:4,marginBottom:20}}>
+          {[{k:"login",l:"Connexion"},{k:"register",l:"Créer un compte"}].map(({k,l}) => (
+            <button key={k} onClick={()=>{setAuthMode(k);setAuthError("");}}
+              style={{flex:1,padding:"8px 0",borderRadius:8,border:"none",cursor:"pointer",fontWeight:800,fontSize:12,
+                background:authMode===k?"#1565c0":"transparent",
+                color:authMode===k?"white":"#78909c",transition:"all 0.2s"}}>
+              {l}
+            </button>
+          ))}
+        </div>
+        <div style={{display:"flex",flexDirection:"column",gap:12}}>
+          <input type="email" value={authEmail} onChange={e=>setAuthEmail(e.target.value)}
+            placeholder="Email" inputMode="email" autoCapitalize="none"
+            style={{padding:"12px 16px",borderRadius:10,border:"2px solid #e3f2fd",fontSize:15,outline:"none",fontFamily:"'Nunito',sans-serif"}}/>
+          <input type="password" value={authPassword} onChange={e=>setAuthPassword(e.target.value)}
+            placeholder="Mot de passe" onKeyDown={e=>e.key==="Enter"&&handleAuth()}
+            style={{padding:"12px 16px",borderRadius:10,border:"2px solid #e3f2fd",fontSize:15,outline:"none",fontFamily:"'Nunito',sans-serif"}}/>
+          {authError && <div style={{color:"#e53935",fontSize:13,fontWeight:700,textAlign:"center",padding:"8px",background:"#ffebee",borderRadius:8}}>{authError}</div>}
+          <button onClick={handleAuth} disabled={authLoading}
+            style={{background:"#1565c0",color:"white",border:"none",padding:"14px",borderRadius:10,cursor:"pointer",fontWeight:800,fontSize:15,marginTop:4,fontFamily:"'Nunito',sans-serif"}}>
+            {authLoading?"...":(authMode==="login"?"Se connecter":"Créer mon compte")}
+          </button>
+        </div>
       </div>
     </div>
   );
 
   return (
-    <div style={{background:"#f4f7fe", minHeight:"100vh", fontFamily:"'Inter', sans-serif"}}>
-      {/* HEADER ORIGINAL */}
-      <div style={{background:"#1c4da1", color:"white", padding:"25px 20px 0px"}}>
-        <div style={{maxWidth:1200, margin:"0 auto", display:"flex", justifyContent:"space-between", alignItems:"center"}}>
-          <div style={{display:"flex", alignItems:"center", gap:12}}>
-            <div style={{background:"#ffb300", width:32, height:32, borderRadius:8, display:"flex", alignItems:"center", justifyContent:"center"}}>🏃</div>
-            <h1 style={{margin:0, fontSize:20, fontWeight:800, letterSpacing:"-0.5px"}}>HBC LANGEAC {isAdmin && "👑"}</h1>
-          </div>
-          <button onClick={()=>signOut(auth)} style={{background:"rgba(255,255,255,0.15)", border:"none", padding:"8px 16px", borderRadius:12, color:"white", fontWeight:600, fontSize:13}}>Déco</button>
+    <div style={{minHeight:"100vh",background:"#f0f6ff",fontFamily:"'Nunito',sans-serif"}}>
+      {toast && (
+        <div style={{position:"fixed",top:16,left:"50%",transform:"translateX(-50%)",background:"#1565c0",color:"white",padding:"10px 24px",borderRadius:30,fontWeight:800,fontSize:14,zIndex:9999,boxShadow:"0 4px 20px rgba(0,0,0,0.2)",whiteSpace:"nowrap"}}>
+          {toast}
         </div>
-        <div style={{display:"flex", gap:25, marginTop:30, maxWidth:1200, margin:"30px auto 0", overflowX:"auto", paddingBottom:15}}>
-          {NAV_ITEMS.map(item => (
-            <span key={item} onClick={()=>setActiveTab(item)} style={{cursor:"pointer", fontWeight:700, fontSize:14, opacity:activeTab===item?1:0.6, borderBottom:activeTab===item?"4px solid white":"4px solid transparent", paddingBottom:10, transition:"0.2s"}}>{item}</span>
-          ))}
+      )}
+
+      {/* HEADER */}
+      <div style={{background:"linear-gradient(135deg,#1565c0 0%,#0d47a1 100%)",boxShadow:"0 4px 20px rgba(13,71,161,0.3)",position:"sticky",top:0,zIndex:100}}>
+        <div style={{maxWidth:1200,margin:"0 auto",padding:"10px 16px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:8}}>
+          <div style={{display:"flex",alignItems:"center",gap:12}}>
+            <div style={{width:46,height:46,borderRadius:"50%",background:"rgba(255,255,255,0.2)",display:"flex",alignItems:"center",justifyContent:"center",color:"white",fontSize:22,flexShrink:0}}>🤾</div>
+            <div>
+              <div style={{color:"white",fontFamily:"'Bebas Neue',sans-serif",fontSize:20,letterSpacing:2,lineHeight:1}}>HBC LANGEAC</div>
+              <div style={{color:"#90caf9",fontSize:10,fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>Caisse Noire</div>
+            </div>
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <div style={{background:"rgba(255,255,255,0.15)",borderRadius:12,padding:"6px 12px",textAlign:"center"}}>
+              <div style={{color:"#90caf9",fontSize:9,fontWeight:700,textTransform:"uppercase",letterSpacing:1}}>Total</div>
+              <div style={{color:"white",fontSize:22,fontFamily:"'Bebas Neue',sans-serif"}}>{totalCaisse.toFixed(1)}€</div>
+            </div>
+            <button onClick={()=>signOut(auth)}
+              style={{background:"rgba(255,255,255,0.15)",border:"none",borderRadius:10,padding:"8px 10px",color:"white",cursor:"pointer",fontSize:11,fontWeight:700,lineHeight:1.4}}>
+              {isAdmin?"👑":"👤"}<br/>Déco
+            </button>
+          </div>
+        </div>
+        <div style={{borderTop:"1px solid rgba(255,255,255,0.1)",overflowX:"auto"}}>
+          <div style={{display:"flex",padding:"0 16px",minWidth:"max-content"}}>
+            {NAV_ITEMS.map(tab => (
+              <button key={tab} onClick={()=>setActiveTab(tab)} style={{
+                background:"none",border:"none",padding:"10px 14px",cursor:"pointer",
+                color:activeTab===tab?"white":"rgba(255,255,255,0.6)",
+                fontFamily:"'Nunito',sans-serif",fontWeight:800,fontSize:12,
+                borderBottom:activeTab===tab?"3px solid white":"3px solid transparent",
+                whiteSpace:"nowrap"
+              }}>{tab}</button>
+            ))}
+          </div>
         </div>
       </div>
 
-      <div style={{padding:25, maxWidth:1200, margin:"0 auto"}}>
+      <div style={{maxWidth:1200,margin:"0 auto",padding:"16px 12px"}}>
+
+        {/* ADMIN BUTTONS */}
         {isAdmin && (
-          <div style={{display:"flex", gap:15, marginBottom:25}}>
-            <button onClick={()=>setShowAddInfraction(true)} style={{flex:1, padding:18, background:"#ff5252", color:"white", border:"none", borderRadius:20, fontWeight:800, fontSize:15, boxShadow:"0 10px 20px rgba(255,82,82,0.2)"}}>+ AMENDE</button>
-            <button onClick={()=>setActiveTab("Règles")} style={{flex:1, padding:18, background:"#4caf50", color:"white", border:"none", borderRadius:20, fontWeight:800, fontSize:15, boxShadow:"0 10px 20px rgba(76,175,80,0.2)"}}>+ RÈGLE</button>
+          <div style={{display:"flex", gap:10, marginBottom:20}}>
+            <button onClick={()=>setShowAddInfraction(true)} style={{flex:1, padding:15, background:"#ef5350", color:"white", border:"none", borderRadius:12, fontWeight:800, cursor:"pointer"}}>+ AMENDE</button>
+            <button onClick={()=>setActiveTab("Règles")} style={{flex:1, padding:15, background:"#4caf50", color:"white", border:"none", borderRadius:12, fontWeight:800, cursor:"pointer"}}>+ RÈGLE</button>
           </div>
         )}
 
-        {activeTab === "Dashboard" && (
-          <>
-            <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(240px, 1fr))", gap:20, marginBottom:30}}>
-              <div style={{background:"white", padding:25, borderRadius:25, boxShadow:"0 10px 30px rgba(0,0,0,0.03)"}}>
-                <div style={{fontSize:28, fontWeight:900, color:"#1c4da1"}}>💰 {totalCaisse.toFixed(1)}€</div>
-                <div style={{fontSize:12, color:"#a0aec0", fontWeight:700, marginTop:5}}>TOTAL CAISSE</div>
-              </div>
-              <div style={{background:"white", padding:25, borderRadius:25, boxShadow:"0 10px 30px rgba(0,0,0,0.03)"}}>
-                <div style={{fontSize:28, fontWeight:900, color:"#1c4da1"}}>🏆 {matches.length}</div>
-                <div style={{fontSize:12, color:"#a0aec0", fontWeight:700, marginTop:5}}>MATCHS</div>
-              </div>
-              <div style={{background:"white", padding:25, borderRadius:25, boxShadow:"0 10px 30px rgba(0,0,0,0.03)"}}>
-                <div style={{fontSize:28, fontWeight:900, color:"#1c4da1"}}>👥 {payments.length}</div>
-                <div style={{fontSize:12, color:"#a0aec0", fontWeight:700, marginTop:5}}>JOUEURS</div>
-              </div>
+        {/* DASHBOARD */}
+        {activeTab==="Dashboard" && (
+          <div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:12,marginBottom:20}}>
+              {[
+                {label:"Total caisse",value:`${totalCaisse.toFixed(1)}€`,color:"#1565c0",icon:"💰"},
+                {label:"Matchs",value:matches.length,color:"#1976d2",icon:"🏆"},
+                {label:"Joueurs",value:players.length,color:"#1e88e5",icon:"👥"},
+                {label:"Record",value:`${Math.max(0,...matchTotals.map(m=>m.total))}€`,color:"#2196f3",icon:"🔥"},
+              ].map(card => (
+                <div key={card.label} style={{...C.card,borderTop:`4px solid ${card.color}`,padding:16}}>
+                  <div style={{fontSize:24}}>{card.icon}</div>
+                  <div style={{fontSize:22,fontFamily:"'Bebas Neue',sans-serif",color:card.color}}>{card.value}</div>
+                  <div style={{fontSize:11,color:"#78909c",fontWeight:700,textTransform:"uppercase",letterSpacing:1}}>{card.label}</div>
+                </div>
+              ))}
             </div>
-
-            <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(300px, 1fr))", gap:25}}>
-              <div style={{background:"white", padding:25, borderRadius:30, boxShadow:"0 10px 30px rgba(0,0,0,0.03)"}}>
-                <h3 style={{marginTop:0, fontSize:17, fontWeight:800, color:"#1c4da1", marginBottom:20}}>🥇 TOP MAUVAIS ÉLÈVES</h3>
-                {topBadBoys.map(([n, s], i) => (
-                  <div key={n} style={{display:"flex", justifyContent:"space-between", padding:"15px 0", borderBottom:"1px solid #f7fafc"}}>
-                    <span style={{fontWeight:600}}><span style={{color:"#cbd5e0", marginRight:12}}>{i+1}</span>{n}</span>
-                    <span style={{fontWeight:800, color:"#1c4da1"}}>{s.total}€</span>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(280px,1fr))",gap:16}}>
+              <div style={C.card}>
+                <h3 style={C.h3}>🏆 Top Mauvais Élèves</h3>
+                {topOffenders.map(([name,stats],i) => (
+                  <div key={name} onClick={()=>{setSelectedPlayer(name);setActiveTab("Joueurs");}} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 0",borderBottom:"1px solid #f0f0f0",cursor:"pointer"}}>
+                    <div style={{width:28,height:28,borderRadius:"50%",background:i===0?"#f4d03f":i===1?"#bdc3c7":i===2?"#e59866":"#e3f2fd",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:900,fontSize:12,color:i<3?"#333":"#1565c0",flexShrink:0}}>{i+1}</div>
+                    <div style={{flex:1,fontWeight:700,color:"#1a237e"}}>{name}</div>
+                    <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:20,color:"#1565c0"}}>{stats.total}€</div>
                   </div>
                 ))}
               </div>
-              <div style={{background:"white", padding:25, borderRadius:30, boxShadow:"0 10px 30px rgba(0,0,0,0.03)"}}>
-                <h3 style={{marginTop:0, fontSize:17, fontWeight:800, color:"#1c4da1", marginBottom:20}}>😈 CLASSEMENT CHABOULAT</h3>
-                {topChaboula.map(([n, s], i) => (
-                  <div key={n} style={{display:"flex", justifyContent:"space-between", padding:"15px 0", borderBottom:"1px solid #f7fafc"}}>
-                    <span style={{fontWeight:600}}><span style={{color:"#cbd5e0", marginRight:12}}>{i+1}</span>{n}</span>
-                    <span style={{fontWeight:800, color:"#9f7aea"}}>{s.chaboula}×</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-            
-            <div style={{marginTop:40}}>
-              <h3 style={{fontSize:18, fontWeight:800, color:"#1c4da1", marginBottom:20}}>🗓️ MATCHS (DU PLUS RÉCENT)</h3>
-              <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(180px, 1fr))", gap:15}}>
-                {matches.map(m => (
-                  <div key={m.fbId} style={{background:"white", padding:20, borderRadius:20, border:"1px solid #edf2f7"}}>
-                    <div style={{fontSize:11, fontWeight:800, color:"#3182ce", marginBottom:5}}>{m.date}</div>
-                    <div style={{fontSize:14, fontWeight:700, color:"#2d3748"}}>{m.match}</div>
-                    <div style={{fontSize:20, fontWeight:900, marginTop:10, color:"#1c4da1"}}>{(m.entries||[]).reduce((s,e)=>s+e.amount,0)}€</div>
+              <div style={C.card}>
+                <h3 style={C.h3}>😈 Classement Chaboulat</h3>
+                {topChaboula.filter(([,s])=>s.chaboula>0).map(([name,stats],i) => (
+                  <div key={name} onClick={()=>{setSelectedPlayer(name);setActiveTab("Joueurs");}} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 0",borderBottom:"1px solid #f0f0f0",cursor:"pointer"}}>
+                    <div style={{width:28,height:28,borderRadius:"50%",background:i===0?"#f4d03f":"#e3f2fd",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:900,fontSize:12,color:i===0?"#333":"#1565c0",flexShrink:0}}>{i+1}</div>
+                    <div style={{flex:1,fontWeight:700,color:"#1a237e"}}>{name}</div>
+                    <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:20,color:"#e53935"}}>{stats.chaboula}×</div>
                   </div>
                 ))}
               </div>
             </div>
-          </>
-        )}
-
-        {activeTab === "Paiements" && (
-          <div style={{background:"white", borderRadius:30, padding:10, boxShadow:"0 10px 30px rgba(0,0,0,0.03)"}}>
-            {payments.sort((a,b)=>b.total-a.total).map(p => (
-              <div key={p.player} style={{padding:20, borderBottom:"1px solid #f7fafc", display:"flex", justifyContent:"space-between", alignItems:"center"}}>
-                <span style={{fontWeight:700, fontSize:16}}>{p.player}</span>
-                <span style={{fontWeight:900, color:p.paid >= p.total ? "#48bb78" : "#f56565", fontSize:18}}>{p.total}€</span>
-              </div>
-            ))}
           </div>
         )}
 
+        {/* MODAL INFRACTION */}
         {showAddInfraction && (
-          <div style={{position:"fixed", inset:0, background:"rgba(26, 32, 44, 0.8)", backdropFilter:"blur(4px)", zIndex:1000, display:"flex", alignItems:"center", justifyContent:"center", padding:20}}>
-            <div style={{background:"white", padding:35, borderRadius:30, width:"100%", maxWidth:400, boxShadow:"0 25px 50px rgba(0,0,0,0.2)"}}>
-              <h2 style={{marginTop:0, fontSize:22, fontWeight:800, color:"#1c4da1"}}>Nouvelle amende 💸</h2>
-              <select onChange={e=>setNewInfraction({...newInfraction, player:e.target.value})} style={{width:"100%", padding:15, marginBottom:12, borderRadius:15, border:"1px solid #e2e8f0", fontSize:15, appearance:"none"}}>
+          <div style={{position:"fixed", inset:0, background:"rgba(0,0,0,0.7)", zIndex:1000, display:"flex", alignItems:"center", justifyContent:"center", padding:20}}>
+            <div style={{background:"white", padding:30, borderRadius:25, width:"100%", maxWidth:400}}>
+              <h3 style={{marginTop:0}}>Nouvelle amende 💸</h3>
+              <select onChange={e=>setNewInfraction({...newInfraction, player:e.target.value})} style={{width:"100%", padding:12, marginBottom:10, borderRadius:10}}>
                 <option>Joueur...</option>
                 {payments.map(p => <option key={p.player} value={p.player}>{p.player}</option>)}
               </select>
-              <select onChange={e=>setNewInfraction({...newInfraction, ruleId:e.target.value})} style={{width:"100%", padding:15, marginBottom:25, borderRadius:15, border:"1px solid #e2e8f0", fontSize:15, appearance:"none"}}>
+              <select onChange={e=>setNewInfraction({...newInfraction, ruleId:e.target.value})} style={{width:"100%", padding:12, marginBottom:20, borderRadius:10}}>
                 <option>Règle...</option>
                 {rules.map(r => <option key={r.id} value={r.id}>{r.name} ({r.amount}€)</option>)}
               </select>
-              <button onClick={addInfraction} style={{width:"100%", padding:16, background:"#1c4da1", color:"white", border:"none", borderRadius:15, fontWeight:800, fontSize:16}}>VALIDER</button>
-              <button onClick={()=>setShowAddInfraction(false)} style={{width:"100%", padding:12, marginTop:10, background:"none", border:"none", color:"#a0aec0", fontWeight:700}}>Annuler</button>
+              <button onClick={addInfraction} style={{width:"100%", padding:14, background:"#1565c0", color:"white", border:"none", borderRadius:10, fontWeight:800, cursor:"pointer"}}>VALIDER</button>
+              <button onClick={()=>setShowAddInfraction(false)} style={{width:"100%", padding:10, marginTop:10, background:"none", border:"none", color:"#999", cursor:"pointer"}}>Annuler</button>
             </div>
           </div>
         )}
       </div>
-
-      {toast && <div style={{position:"fixed", bottom:30, left:"50%", transform:"translateX(-50%)", background:"#2d3748", color:"white", padding:"12px 24px", borderRadius:20, fontSize:14, fontWeight:700, boxShadow:"0 10px 25px rgba(0,0,0,0.1)"}}>{toast}</div>}
     </div>
   );
 }
