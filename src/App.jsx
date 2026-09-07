@@ -94,6 +94,7 @@ export default function App() {
   const [authPassword, setAuthPassword] = useState("");
   const [authError, setAuthError] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
+  const [guestMode, setGuestMode] = useState(false);
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(null), 2500); };
 
@@ -111,7 +112,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!user) { setLoading(false); return; }
+    if (!user && !guestMode) { setLoading(false); return; }
     setLoading(true);
     let loaded = 0;
     const checkDone = () => { loaded++; if (loaded >= 5) setLoading(false); };
@@ -121,9 +122,10 @@ export default function App() {
     const unsubCal = onSnapshot(collection(db, "calendar"), snap => { if (!snap.empty) setCalendar(snap.docs.map(d => ({...d.data(), fbId: d.id}))); checkDone(); });
     const unsubPlayers = onSnapshot(collection(db, "playersList"), snap => { setPlayersList(snap.docs.map(d => ({...d.data(), id: d.id}))); checkDone(); });
     return () => { unsubRules(); unsubMatches(); unsubPayments(); unsubCal(); unsubPlayers(); };
-  }, [user]);
+  }, [user, guestMode]);
 
   useEffect(() => {
+    if (!isAdmin) return;
     const initIfEmpty = async () => {
       const rulesSnap = await getDocs(collection(db, "rules"));
       if (rulesSnap.empty) {
@@ -136,7 +138,7 @@ export default function App() {
       }
     };
     initIfEmpty();
-  }, []);
+  }, [isAdmin]);
 
   const allEntries = useMemo(() => matches.flatMap(m => (m.entries||[]).map((e,idx) => ({...e, matchLabel:m.match, matchDate:m.date, matchId: m.fbId||String(m.id), sortKey:m.sortKey||0, entryIndex:idx}))), [matches]);
 
@@ -318,7 +320,7 @@ export default function App() {
     </div>
   );
 
-  if (!user) return (
+  if (!user && !guestMode) return (
     <div style={{minHeight:"100vh",background:"linear-gradient(135deg,#1565c0,#0d47a1)",display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
       <div style={{background:"white",borderRadius:20,padding:32,width:"100%",maxWidth:380,boxShadow:"0 20px 60px rgba(0,0,0,0.3)"}}>
         <div style={{textAlign:"center",marginBottom:28}}>
@@ -338,6 +340,9 @@ export default function App() {
           {authError && <div style={{color:"#e53935",fontSize:13,fontWeight:700,textAlign:"center",padding:"8px",background:"#ffebee",borderRadius:8}}>{authError}</div>}
           <button onClick={handleAuth} disabled={authLoading} style={{background:"#1565c0",color:"white",border:"none",padding:"14px",borderRadius:10,cursor:"pointer",fontWeight:800,fontSize:15,marginTop:4,fontFamily:"'Nunito',sans-serif"}}>
             {authLoading?"...":(authMode==="login"?"Se connecter":"Créer mon compte")}
+          </button>
+          <button onClick={()=>setGuestMode(true)} style={{background:"none",color:"#1565c0",border:"none",padding:"10px",cursor:"pointer",fontWeight:700,fontSize:13,textDecoration:"underline",marginTop:4}}>
+            Continuer en invité (lecture seule)
           </button>
         </div>
       </div>
@@ -378,8 +383,8 @@ export default function App() {
               <div style={{color:"#90caf9",fontSize:9,fontWeight:700,textTransform:"uppercase",letterSpacing:1}}>Total</div>
               <div style={{color:"white",fontSize:22,fontFamily:"'Bebas Neue',sans-serif"}}>{totalCaisse.toFixed(1)}€</div>
             </div>
-            <button onClick={()=>signOut(auth)} style={{background:"rgba(255,255,255,0.15)",border:"none",borderRadius:10,padding:"8px 10px",color:"white",cursor:"pointer",fontSize:11,fontWeight:700,lineHeight:1.4}}>
-              {isAdmin?"👑":"👤"}<br/>Déco
+            <button onClick={()=>{ if(user) signOut(auth); setGuestMode(false); }} style={{background:"rgba(255,255,255,0.15)",border:"none",borderRadius:10,padding:"8px 10px",color:"white",cursor:"pointer",fontSize:11,fontWeight:700,lineHeight:1.4}}>
+              {isAdmin?"👑":guestMode?"👁️":"👤"}<br/>Déco
             </button>
           </div>
         </div>
