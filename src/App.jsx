@@ -131,8 +131,23 @@ export default function App() {
       if (rulesSnap.empty) {
         const batch = writeBatch(db);
         INITIAL_RULES.forEach(r => batch.set(doc(db, "rules", String(r.id)), r));
+        await batch.commit();
+      }
+      const matchesSnap = await getDocs(collection(db, "matches"));
+      if (matchesSnap.empty && HISTORICAL_MATCHES.length) {
+        const batch = writeBatch(db);
         HISTORICAL_MATCHES.forEach(m => batch.set(doc(db, "matches", String(m.id)), m));
+        await batch.commit();
+      }
+      const paymentsSnap = await getDocs(collection(db, "payments"));
+      if (paymentsSnap.empty && INITIAL_PAYMENTS.length) {
+        const batch = writeBatch(db);
         INITIAL_PAYMENTS.forEach(p => batch.set(doc(db, "payments", p.player), p));
+        await batch.commit();
+      }
+      const calSnap = await getDocs(collection(db, "calendar"));
+      if (calSnap.empty) {
+        const batch = writeBatch(db);
         INITIAL_CALENDAR.forEach(c => batch.set(doc(db, "calendar", String(c.id)), c));
         await batch.commit();
       }
