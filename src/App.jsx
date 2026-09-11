@@ -8,9 +8,7 @@ import {
   signOut, onAuthStateChanged
 } from "firebase/auth";
 import { INITIAL_RULES, INITIAL_PAYMENTS, INITIAL_CALENDAR } from "./data";
-
 const HISTORICAL_MATCHES = [];
-
 function parseMatchDate(str) {
   if (!str) return null;
   const parts = str.split("/");
@@ -19,7 +17,6 @@ function parseMatchDate(str) {
   if (!d || !m || !y) return null;
   return new Date(y, m - 1, d);
 }
-
 function sortCalendarEntries(list) {
   const today = new Date(); today.setHours(0, 0, 0, 0);
   const withDates = list.map(m => ({ ...m, _d: parseMatchDate(m.date) }));
@@ -27,7 +24,6 @@ function sortCalendarEntries(list) {
   const past = withDates.filter(m => !m._d || m._d < today).sort((a, b) => (b._d || 0) - (a._d || 0));
   return [...upcoming, ...past];
 }
-
 function getPlayerInfractionStats(entries) {
   const counts = {};
   entries.forEach(e => {
@@ -52,7 +48,6 @@ function getPlayerInfractionStats(entries) {
   });
   return Object.entries(counts).filter(([,v])=>v>=2).sort((a,b)=>b[1]-a[1]);
 }
-
 const NAV_ITEMS = ["Dashboard","Paiements","Joueurs","Règles","Calendrier","Stats"];
 const HORS_MATCH_LABEL = "Hors match";
 const WEIGHT_PERIODS = [
@@ -60,7 +55,6 @@ const WEIGHT_PERIODS = [
   { key: "mi", label: "Mi-saison" },
   { key: "fin", label: "Fin de saison" },
 ];
-
 export default function App() {
   const [rules, setRules] = useState(INITIAL_RULES);
   const [matches, setMatches] = useState(HISTORICAL_MATCHES);
@@ -68,7 +62,6 @@ export default function App() {
   const [payments, setPayments] = useState(INITIAL_PAYMENTS);
   const [playersList, setPlayersList] = useState([]);
   const [weights, setWeights] = useState([]);
-
   const [activeTab, setActiveTab] = useState("Dashboard");
   const [selectedPlayer, setSelectedPlayer] = useState(null);
   const [editingRule, setEditingRule] = useState(null);
@@ -87,7 +80,6 @@ export default function App() {
   const [viewMatchDetail, setViewMatchDetail] = useState(null);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState(null);
-
   const [user, setUser] = useState(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [authMode, setAuthMode] = useState("login");
@@ -96,9 +88,7 @@ export default function App() {
   const [authError, setAuthError] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
   const [guestMode, setGuestMode] = useState(false);
-
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(null), 2500); };
-
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
       setUser(u);
@@ -111,7 +101,6 @@ export default function App() {
     });
     return () => unsub();
   }, []);
-
   useEffect(() => {
     if (!user && !guestMode) { setLoading(false); return; }
     setLoading(true);
@@ -125,7 +114,6 @@ export default function App() {
     const unsubWeights = onSnapshot(collection(db, "weights"), snap => { setWeights(snap.docs.map(d => ({...d.data(), fbId: d.id}))); checkDone(); });
     return () => { unsubRules(); unsubMatches(); unsubPayments(); unsubCal(); unsubPlayers(); unsubWeights(); };
   }, [user, guestMode]);
-
   useEffect(() => {
     if (!isAdmin) return;
     const initIfEmpty = async () => {
@@ -156,9 +144,7 @@ export default function App() {
     };
     initIfEmpty();
   }, [isAdmin]);
-
   const allEntries = useMemo(() => matches.flatMap(m => (m.entries||[]).map((e,idx) => ({...e, matchLabel:m.match, matchDate:m.date, matchId: m.fbId||String(m.id), sortKey:m.sortKey||0, entryIndex:idx}))), [matches]);
-
   const playerStats = useMemo(() => {
     const stats = {};
     allEntries.forEach(e => {
@@ -171,13 +157,11 @@ export default function App() {
     });
     return stats;
   }, [allEntries]);
-
   const players = useMemo(() => {
     const fromStats = Object.keys(playerStats);
     const fromList = playersList.filter(p => !p.hidden).map(p => p.name);
     return Array.from(new Set([...fromStats, ...fromList])).sort();
   }, [playerStats, playersList]);
-
   useEffect(() => {
     if (!isAdmin || Object.keys(playerStats).length === 0 || payments.length === 0) return;
     payments.forEach(async p => {
@@ -187,26 +171,22 @@ export default function App() {
       }
     });
   }, [playerStats, isAdmin]);
-
   const totalCaisse = useMemo(() => payments.reduce((s,p) => s+p.total, 0), [payments]);
   const matchTotals = useMemo(() => matches
     .filter(m => m.match !== HORS_MATCH_LABEL)
     .map(m => ({...m, total: (m.entries||[]).reduce((s,e) => s+e.amount, 0)})), [matches]);
   const topOffenders = useMemo(() => Object.entries(playerStats).filter(([,s]) => s.total > 0).sort((a,b) => b[1].total-a[1].total).slice(0,5), [playerStats]);
   const topChaboula = useMemo(() => Object.entries(playerStats).sort((a,b) => b[1].chaboula-a[1].chaboula).slice(0,5), [playerStats]);
-
   const getMatchDoc = (calMatch) => {
     if (!calMatch) return null;
     const calId = calMatch.fbId || String(calMatch.id);
     return matches.find(m => (m.fbId || String(m.id)) === calId);
   };
-
   const calcWeightAmount = (startWeight, currentWeight) => {
     if (!startWeight || !currentWeight) return 0;
     const diffG = Math.abs((parseFloat(currentWeight) - parseFloat(startWeight)) * 1000);
     return Math.floor(diffG / 100) * 0.5;
   };
-
   const addPlayer = async () => {
     if (!newPlayerName.trim()) return;
     const name = newPlayerName.trim();
@@ -215,14 +195,12 @@ export default function App() {
     setNewPlayerName(""); setShowAddPlayer(false);
     showToast(`${name} ajouté ✓`);
   };
-
   const hidePlayer = async (name) => {
     const p = playersList.find(x => x.name === name);
     if (p) await updateDoc(doc(db, "playersList", name), {hidden: true});
     else await setDoc(doc(db, "playersList", name), {name, hidden: true, createdAt: Date.now()});
     showToast(`${name} masqué`);
   };
-
   const renamePlayer = async () => {
     if (!editingPlayerName || !editingPlayerName.newName.trim()) return;
     const {old: oldName, newName} = editingPlayerName;
@@ -251,43 +229,38 @@ export default function App() {
     setEditingPlayerName(null);
     showToast(`${oldName} → ${trimmed} ✓`);
   };
-
   const toggleRule = (id) => setNewInfraction(p => ({...p, checkedRules: {...p.checkedRules, [id]: !p.checkedRules[id]}}));
-
   const addInfraction = async () => {
     const { player, calMatchId, checkedRules, useWeight, weightPeriod, weightStart, weightCurrent, customDetail, customAmount } = newInfraction;
     if (!player) { showToast("Choisis un joueur"); return; }
     const entries = [];
     rules.forEach(r => { if (checkedRules[r.id]) entries.push({player, amount:r.amount, detail:r.name}); });
-
     let weightHandled = false;
     if (useWeight) {
       const wd = weights.find(w => w.player === player) || {};
       const currentW = parseFloat(weightCurrent) || 0;
-      if (currentW) {
+      if (!currentW) { showToast("Saisis un poids valide"); return; }
+      if (weightPeriod === "avant") {
+        await setDoc(doc(db, "weights", player), {...wd, player, startWeight: currentW}, {merge: true});
         weightHandled = true;
-        if (weightPeriod === "avant") {
-          await setDoc(doc(db, "weights", player), {...wd, player, startWeight: currentW}, {merge: true});
-        } else if (weightPeriod === "mi") {
-          const baseW = wd.startWeight || parseFloat(weightStart) || 0;
-          if (baseW) {
-            const amount = calcWeightAmount(baseW, currentW);
-            const diffG = Math.round((currentW - baseW) * 1000);
-            entries.push({player, amount, detail:`Pesée mi-saison: ${diffG >= 0 ? "+" : ""}${diffG}g (${baseW}kg → ${currentW}kg)`});
-            await setDoc(doc(db, "weights", player), {...wd, player, startWeight: baseW, midWeight: currentW}, {merge: true});
-          }
-        } else if (weightPeriod === "fin") {
-          const baseW = wd.midWeight || wd.startWeight || parseFloat(weightStart) || 0;
-          if (baseW) {
-            const amount = calcWeightAmount(baseW, currentW);
-            const diffG = Math.round((currentW - baseW) * 1000);
-            entries.push({player, amount, detail:`Pesée fin de saison: ${diffG >= 0 ? "+" : ""}${diffG}g (${baseW}kg → ${currentW}kg)`});
-            await setDoc(doc(db, "weights", player), {...wd, player, endWeight: currentW}, {merge: true});
-          }
-        }
+      } else if (weightPeriod === "mi") {
+        const baseW = wd.startWeight || parseFloat(weightStart) || 0;
+        if (!baseW) { showToast("Renseigne d'abord un poids de début de saison"); return; }
+        const amount = calcWeightAmount(baseW, currentW);
+        const diffG = Math.round((currentW - baseW) * 1000);
+        entries.push({player, amount, detail:`Pesée mi-saison: ${diffG >= 0 ? "+" : ""}${diffG}g (${baseW}kg → ${currentW}kg)`});
+        await setDoc(doc(db, "weights", player), {...wd, player, startWeight: baseW, midWeight: currentW}, {merge: true});
+        weightHandled = true;
+      } else if (weightPeriod === "fin") {
+        const baseW = wd.midWeight || wd.startWeight || parseFloat(weightStart) || 0;
+        if (!baseW) { showToast("Renseigne d'abord un poids de référence"); return; }
+        const amount = calcWeightAmount(baseW, currentW);
+        const diffG = Math.round((currentW - baseW) * 1000);
+        entries.push({player, amount, detail:`Pesée fin de saison: ${diffG >= 0 ? "+" : ""}${diffG}g (${baseW}kg → ${currentW}kg)`});
+        await setDoc(doc(db, "weights", player), {...wd, player, endWeight: currentW}, {merge: true});
+        weightHandled = true;
       }
     }
-
     if (customDetail && customAmount) entries.push({player, amount: parseFloat(customAmount)||0, detail: customDetail});
     if (!entries.length && !weightHandled) { showToast("Coche au moins une règle ou saisis un poids valide"); return; }
     if (!entries.length && weightHandled) {
@@ -295,7 +268,6 @@ export default function App() {
       showToast(`Poids de référence enregistré pour ${player} ✓`);
       return;
     }
-
     let matchDocId, matchLabelFinal, matchDateFinal, matchSortKeyFinal;
     if (calMatchId) {
       const calMatch = calendar.find(c => (c.fbId||String(c.id)) === calMatchId);
@@ -308,11 +280,9 @@ export default function App() {
       matchDateFinal = new Date().toLocaleDateString("fr-FR",{month:"short",year:"numeric"});
       matchSortKeyFinal = 999;
     }
-
     const existing = calMatchId
       ? matches.find(m => (m.fbId||String(m.id)) === matchDocId)
       : matches.find(m => m.match === HORS_MATCH_LABEL && !m.calMatchId);
-
     if (existing) {
       await updateDoc(doc(db, "matches", existing.fbId||String(existing.id)), {entries: [...(existing.entries||[]), ...entries]});
     } else {
@@ -324,11 +294,9 @@ export default function App() {
     const p = payments.find(x => x.player === player);
     if (p) await updateDoc(doc(db, "payments", p.fbId||player), {total: (playerStats[player]?.total||0) + totalAdded});
     else await setDoc(doc(db, "payments", player), {player, total: totalAdded, paid: 0});
-
     setNewInfraction(prev => ({...prev, player:"", checkedRules:{}, useWeight:false, weightPeriod:"avant", weightStart:"", weightCurrent:"", customDetail:"", customAmount:""}));
     showToast(`${entries.length} infraction(s) ajoutée(s) pour ${player} (${totalAdded.toFixed(2)}€) ✓`);
   };
-
   const deleteInfraction = async (matchId, entryIndex) => {
     const m = matches.find(x => x.fbId === matchId || String(x.id) === String(matchId));
     if (!m) return;
@@ -340,39 +308,32 @@ export default function App() {
     }
     showToast("Infraction supprimée");
   };
-
   const addRule = async () => {
     if (!newRule.name || !newRule.amount) return;
     const r = {id: Date.now(), name: newRule.name, amount: parseFloat(newRule.amount)};
     await setDoc(doc(db, "rules", String(r.id)), r);
     setNewRule({name:"",amount:""}); setShowAddRule(false); showToast("Règle ajoutée ✓");
   };
-
   const saveRule = async () => { await updateDoc(doc(db, "rules", String(editingRule.id)), editingRule); setEditingRule(null); showToast("Règle modifiée ✓"); };
   const deleteRule = async (id) => { await deleteDoc(doc(db, "rules", String(id))); showToast("Règle supprimée"); };
-
   const addCalendarMatch = async () => {
     if (!newCalMatch.opponent || !newCalMatch.date) return;
     const m = {...newCalMatch, id: Date.now(), sortKey: 999, home: newCalMatch.home === true || newCalMatch.home === "true"};
     await setDoc(doc(db, "calendar", String(m.id)), m);
     setNewCalMatch({date:"",opponent:"",home:true,location:"",team:"Éq1"}); setShowAddCalendar(false); showToast("Match ajouté ✓");
   };
-
   const calendarEq1 = useMemo(() => sortCalendarEntries(calendar.filter(m => (m.team||"Éq1") === "Éq1")), [calendar]);
   const calendarEq2 = useMemo(() => sortCalendarEntries(calendar.filter(m => m.team === "Éq2")), [calendar]);
   const sortedCalendar = useMemo(() => sortCalendarEntries(calendar), [calendar]);
-
   const today0 = new Date(new Date().setHours(0,0,0,0));
   const getNextId = (list) => { const n = list.find(m => m._d && m._d >= today0); return n ? (n.fbId||String(n.id)) : null; };
   const nextMatchFbId1 = getNextId(calendarEq1);
   const nextMatchFbId2 = getNextId(calendarEq2);
-
   const saveMatchResult = async (m, result, score) => {
     await updateDoc(doc(db, "calendar", m.fbId || String(m.id)), {result, score});
     setEditingMatchResult(null);
     showToast("Résultat enregistré ✓");
   };
-
   const savePayment = async (playerName) => {
     const added = parseFloat(paymentInput) || 0;
     const p = payments.find(x => x.player === playerName);
@@ -380,7 +341,6 @@ export default function App() {
     await updateDoc(doc(db, "payments", p.fbId||playerName), {paid: Math.min(p.paid + added, p.total)});
     setEditingPayment(null); setPaymentInput(""); showToast("Paiement enregistré ✓");
   };
-
   const resetPayment = async (playerName) => {
     const p = payments.find(x => x.player === playerName);
     if (!p) return;
@@ -388,7 +348,6 @@ export default function App() {
     await updateDoc(doc(db, "payments", p.fbId||playerName), {paid: 0});
     showToast(`Paiement de ${playerName} remis à 0`);
   };
-
   const handleAuth = async () => {
     setAuthError(""); setAuthLoading(true);
     try {
@@ -401,14 +360,12 @@ export default function App() {
     }
     setAuthLoading(false);
   };
-
   const C = {
     card: {background:"white", borderRadius:16, padding:20, boxShadow:"0 2px 12px rgba(0,0,0,0.07)"},
     h3: {margin:"0 0 16px", color:"#0d47a1", fontFamily:"'Bebas Neue',sans-serif", fontSize:20, letterSpacing:1},
     input: {width:"100%",padding:"10px",borderRadius:8,border:"2px solid #e3f2fd",fontSize:14,boxSizing:"border-box",fontFamily:"'Nunito',sans-serif"},
     label: {fontSize:11,fontWeight:700,color:"#78909c",display:"block",marginBottom:4,textTransform:"uppercase"},
   };
-
   const renderCalCard = (m, nextId) => {
     const fbId = m.fbId || String(m.id);
     const isNext = fbId === nextId;
@@ -456,14 +413,12 @@ export default function App() {
       </div>
     );
   };
-
   if (loading) return (
     <div style={{minHeight:"100vh",background:"#f0f6ff",display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:16}}>
       <div style={{width:80,height:80,borderRadius:"50%",background:"#1565c0",display:"flex",alignItems:"center",justifyContent:"center",color:"white",fontSize:36}}>🤾</div>
       <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:24,color:"#0d47a1",letterSpacing:2}}>Chargement...</div>
     </div>
   );
-
   if (!user && !guestMode) return (
     <div style={{minHeight:"100vh",background:"linear-gradient(135deg,#1565c0,#0d47a1)",display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
       <div style={{background:"white",borderRadius:20,padding:32,width:"100%",maxWidth:380,boxShadow:"0 20px 60px rgba(0,0,0,0.3)"}}>
@@ -492,11 +447,9 @@ export default function App() {
       </div>
     </div>
   );
-
   return (
     <div style={{minHeight:"100vh",background:"#f0f6ff",fontFamily:"'Nunito',sans-serif"}}>
       {toast && <div style={{position:"fixed",top:16,left:"50%",transform:"translateX(-50%)",background:"#1565c0",color:"white",padding:"10px 24px",borderRadius:30,fontWeight:800,fontSize:14,zIndex:9999,boxShadow:"0 4px 20px rgba(0,0,0,0.2)",whiteSpace:"nowrap"}}>{toast}</div>}
-
       {editingPlayerName && (
         <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
           <div style={{background:"white",borderRadius:20,padding:28,width:"100%",maxWidth:360,boxShadow:"0 20px 60px rgba(0,0,0,0.3)"}}>
@@ -512,7 +465,6 @@ export default function App() {
           </div>
         </div>
       )}
-
       {viewMatchDetail && (() => {
         const m = viewMatchDetail;
         const matchDoc = getMatchDoc(m);
@@ -557,7 +509,6 @@ export default function App() {
           </div>
         );
       })()}
-
       <div style={{background:"linear-gradient(135deg,#1565c0 0%,#0d47a1 100%)",boxShadow:"0 4px 20px rgba(13,71,161,0.3)",position:"sticky",top:0,zIndex:100}}>
         <div style={{maxWidth:1200,margin:"0 auto",padding:"10px 16px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:8}}>
           <div style={{display:"flex",alignItems:"center",gap:12}}>
@@ -585,13 +536,11 @@ export default function App() {
           </div>
         </div>
       </div>
-
       <div style={{maxWidth:1200,margin:"0 auto",padding:"16px 12px"}}>
-
         {activeTab==="Dashboard" && (
           <div>
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:12,marginBottom:20}}>
-              {[{label:"Total caisse",value:`${totalCaisse.toFixed(1)}€`,color:"#1565c0",icon:"💰"},{label:"Matchs",value:matchTotals.length,color:"#1976d2",icon:"🏆"},{label:"Joueurs",value:players.length,color:"#1e88e5",icon:"👥"},{label:"Record",value:`${Math.max(0,...matchTotals.map(m=>m.total))}€`,color:"#2196f3",icon:"🔥"}].map(card => (
+              {[{label:"Total caisse",value:`${totalCaisse.toFixed(1)}€`,color:"#1565c0",icon:"💰"},{label:"Matchs",value:matchTotals.filter(m=>m.total>0).length,color:"#1976d2",icon:"🏆"},{label:"Joueurs",value:players.length,color:"#1e88e5",icon:"👥"},{label:"Record",value:`${Math.max(0,...matchTotals.map(m=>m.total))}€`,color:"#2196f3",icon:"🔥"}].map(card => (
                 <div key={card.label} style={{...C.card,borderTop:`4px solid ${card.color}`,padding:16}}>
                   <div style={{fontSize:24}}>{card.icon}</div>
                   <div style={{fontSize:22,fontFamily:"'Bebas Neue',sans-serif",color:card.color}}>{card.value}</div>
@@ -635,7 +584,6 @@ export default function App() {
             </div>
           </div>
         )}
-
         {activeTab==="Paiements" && (
           <div>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16,flexWrap:"wrap",gap:10}}>
@@ -703,7 +651,6 @@ export default function App() {
             </div>
           </div>
         )}
-
         {activeTab==="Joueurs" && (
           <div>
             {selectedPlayer ? (
@@ -758,7 +705,6 @@ export default function App() {
                     </div>
                   )}
                 </div>
-
                 {isAdmin && showAddPlayer && (
                   <div style={{...C.card,marginBottom:16}}>
                     <h3 style={C.h3}>➕ Ajouter un joueur</h3>
@@ -769,7 +715,6 @@ export default function App() {
                     </div>
                   </div>
                 )}
-
                 {isAdmin && showAddInfraction && (
                   <div style={{...C.card,marginBottom:16}}>
                     <h3 style={C.h3}>Ajouter des infractions</h3>
@@ -792,7 +737,6 @@ export default function App() {
                         {!sortedCalendar.length && <div style={{fontSize:11,color:"#90a4ae",marginTop:4}}>Aucun match au calendrier pour l'instant — ajoute-le dans l'onglet Calendrier.</div>}
                       </div>
                     </div>
-
                     <label style={C.label}>Règles (coche tout ce qui s'applique)</label>
                     <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(220px,1fr))",gap:6,marginBottom:14,maxHeight:260,overflowY:"auto",padding:"8px",background:"#f8fbff",borderRadius:8}}>
                       {rules.map(r => (
@@ -803,7 +747,6 @@ export default function App() {
                         </label>
                       ))}
                     </div>
-
                     <label style={{display:"flex",alignItems:"center",gap:8,marginBottom:10,cursor:"pointer"}}>
                       <input type="checkbox" checked={newInfraction.useWeight} onChange={()=>setNewInfraction(p=>({...p,useWeight:!p.useWeight}))}/>
                       <span style={{fontWeight:700,color:"#1a237e",fontSize:13}}>⚖️ Règle poids (0,50€/100g)</span>
@@ -846,7 +789,6 @@ export default function App() {
                       </div>
                       );
                     })()}
-
                     <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:12}}>
                       <div>
                         <label style={C.label}>+ Détail personnalisé (optionnel)</label>
@@ -857,7 +799,6 @@ export default function App() {
                         <input type="number" inputMode="decimal" value={newInfraction.customAmount} onChange={e=>setNewInfraction(p=>({...p,customAmount:e.target.value}))} placeholder="0" style={C.input}/>
                       </div>
                     </div>
-
                     <div style={{display:"flex",gap:10,marginTop:14}}>
                       <button onClick={addInfraction} style={{background:"#1565c0",color:"white",border:"none",padding:"10px 22px",borderRadius:8,cursor:"pointer",fontWeight:800}}>Valider pour ce joueur</button>
                       <button onClick={()=>{setShowAddInfraction(false);setNewInfraction(p=>({...p,player:"",checkedRules:{},useWeight:false,weightPeriod:"avant",customDetail:"",customAmount:""}));}} style={{background:"#eceff1",color:"#546e7a",border:"none",padding:"10px 18px",borderRadius:8,cursor:"pointer",fontWeight:700}}>Fermer</button>
@@ -865,7 +806,6 @@ export default function App() {
                     <div style={{fontSize:11,color:"#90a4ae",marginTop:8}}>💡 Le match reste sélectionné : choisis simplement le joueur suivant pour enchaîner.</div>
                   </div>
                 )}
-
                 <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(150px,1fr))",gap:12}}>
                   {players.slice().sort((a,b)=>(playerStats[b]?.total||0)-(playerStats[a]?.total||0)).map(player => {
                     const isHidden = playersList.find(p=>p.name===player)?.hidden;
@@ -892,7 +832,6 @@ export default function App() {
             )}
           </div>
         )}
-
         {activeTab==="Règles" && (
           <div>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
@@ -972,7 +911,6 @@ export default function App() {
             </div>
           </div>
         )}
-
         {activeTab==="Calendrier" && (
           <div>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
@@ -1010,7 +948,6 @@ export default function App() {
             </div>
           </div>
         )}
-
         {activeTab==="Stats" && (
           <div>
             <h2 style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:26,color:"#0d47a1",letterSpacing:1,margin:"0 0 16px"}}>📊 Stats</h2>
@@ -1054,7 +991,6 @@ export default function App() {
             </div>
           </div>
         )}
-
       </div>
     </div>
   );
