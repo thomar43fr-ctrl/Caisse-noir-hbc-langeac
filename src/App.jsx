@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from "react";
-import { db, auth } from "./firebase";
+import { db, auth, storage } from "./firebase";
 import {
   collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, writeBatch, getDocs, getDoc
 } from "firebase/firestore";
@@ -7,8 +7,18 @@ import {
   createUserWithEmailAndPassword, signInWithEmailAndPassword,
   signOut, onAuthStateChanged
 } from "firebase/auth";
+import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { INITIAL_RULES, INITIAL_PAYMENTS, INITIAL_CALENDAR } from "./data";
 import { HISTORICAL_MATCHES } from "./matches";
+
+function parseMatchDate(str) {
+  if (!str) return null;
+  const parts = str.split("/");
+  if (parts.length !== 3) return null;
+  const [d, m, y] = parts.map(Number);
+  if (!d || !m || !y) return null;
+  return new Date(y, m - 1, d);
+}
 
 function getPlayerInfractionStats(entries) {
   const counts = {};
@@ -58,6 +68,8 @@ export default function App() {
   const [editingPlayerName, setEditingPlayerName] = useState(null);
   const [newInfraction, setNewInfraction] = useState({player:"",ruleId:"",customDetail:"",customAmount:"",matchLabel:"",weightStart:"",weightCurrent:""});
   const [newCalMatch, setNewCalMatch] = useState({date:"",opponent:"",home:true,location:"",team:"Éq1"});
+  const [editingMatchResult, setEditingMatchResult] = useState(null);
+  const [uploadingPhotoId, setUploadingPhotoId] = useState(null);
   const [editingPayment, setEditingPayment] = useState(null);
   const [paymentInput, setPaymentInput] = useState("");
   const [loading, setLoading] = useState(true);
@@ -274,6 +286,39 @@ export default function App() {
     const m = {...newCalMatch, id: Date.now(), sortKey: 999, home: newCalMatch.home === true || newCalMatch.home === "true"};
     await setDoc(doc(db, "calendar", String(m.id)), m);
     setNewCalMatch({date:"",opponent:"",home:true,location:"",team:"Éq1"}); setShowAddCalendar(false); showToast("Match ajouté ✓");
+  };
+
+  const sortedCalendar = useMemo(() => {
+    const today = new Date(); today.setHours(0,0,0,0);
+    const withDates = calendar.map(m => ({...m, _d: parseMatchDate(m.date)}));
+    const upcoming = withDates.filter(m => m._d && m._d >= today).sort((a,b)=>a._d-b._d);
+    const past = withDates.filter(m => !m._d || m._d < today).sort((a,b)=>(b._d||0)-(a._d||0));
+    return [...upcoming, ...past];
+  }, [calendar]);
+
+  const nextMatchFbId = sortedCalendar.find(m => m._d && m._d >= new Date(new Date().setHours(0,0,0,0)))?.fbId
+    || sortedCalendar.find(m => m._d && m._d >= new Date(new Date().setHours(0,0,0,0)))?.id;
+
+  const saveMatchResult = async (m, result, score) => {
+    await updateDoc(doc(db, "calendar", m.fbId || String(m.id)), {result, score});
+    setEditingMatchResult(null);
+    showToast("Résultat enregistré ✓");
+  };
+
+  const uploadMatchPhoto = async (m, file) => {
+    if (!file) return;
+    const fbId = m.fbId || String(m.id);
+    setUploadingPhotoId(fbId);
+    try {
+      const fileRef = ref(storage, `feuilles-de-match/${fbId}-${Date.now()}`);
+      await uploadBytes(fileRef, file);
+      const url = await getDownloadURL(fileRef);
+      await updateDoc(doc(db, "calendar", fbId), {photoUrl: url});
+      showToast("Feuille de match ajoutée ✓");
+    } catch(e) {
+      showToast("Erreur lors de l'envoi de la photo");
+    }
+    setUploadingPhotoId(null);
   };
 
   const savePayment = async (playerName) => {
@@ -752,15 +797,57 @@ export default function App() {
               </div>
             )}
             <div style={{display:"flex",flexDirection:"column",gap:10}}>
-              {calendar.slice().sort((a,b)=>b.sortKey-a.sortKey).map(m => (
-                <div key={m.fbId||m.id} style={{background:"white",borderRadius:14,padding:"12px 16px",boxShadow:"0 2px 8px rgba(0,0,0,0.06)",display:"flex",alignItems:"center",gap:14,borderLeft:`4px solid ${m.home?"#1565c0":"#42a5f5"}`}}>
-                  <div style={{width:38,height:38,borderRadius:"50%",background:m.team==="Éq2"?"#e3f2fd":"#1565c0",display:"flex",alignItems:"center",justifyContent:"center",color:m.team==="Éq2"?"#1565c0":"white",fontFamily:"'Bebas Neue',sans-serif",fontSize:12,flexShrink:0}}>{m.team}</div>
-                  <div style={{flex:1,minWidth:0}}>
-                    <div style={{fontWeight:800,color:"#0d47a1",fontSize:14}}>vs {m.opponent}</div>
-                    <div style={{fontSize:12,color:"#78909c",marginTop:2}}>{m.date} • {m.location} • {m.home?"🏠":"✈️"}</div>
+              {sortedCalendar.map(m => {
+                const fbId = m.fbId || String(m.id);
+                const isNext = fbId === nextMatchFbId;
+                const isPast = m._d && m._d < new Date(new Date().setHours(0,0,0,0));
+                return (
+                <div key={fbId} style={{background:"white",borderRadius:14,padding:"12px 16px",boxShadow:isNext?"0 4px 16px rgba(21,101,192,0.25)":"0 2px 8px rgba(0,0,0,0.06)",borderLeft:`4px solid ${m.home?"#1565c0":"#42a5f5"}`,outline:isNext?"2px solid #1565c0":"none"}}>
+                  <div style={{display:"flex",alignItems:"center",gap:14}}>
+                    <div style={{width:38,height:38,borderRadius:"50%",background:m.team==="Éq2"?"#e3f2fd":"#1565c0",display:"flex",alignItems:"center",justifyContent:"center",color:m.team==="Éq2"?"#1565c0":"white",fontFamily:"'Bebas Neue',sans-serif",fontSize:12,flexShrink:0}}>{m.team}</div>
+                    <div style={{flex:1,minWidth:0}}>
+                      {isNext && <div style={{display:"inline-block",background:"#1565c0",color:"white",fontSize:10,fontWeight:800,padding:"2px 8px",borderRadius:10,marginBottom:4,textTransform:"uppercase",letterSpacing:0.5}}>Prochain match</div>}
+                      <div style={{fontWeight:800,color:"#0d47a1",fontSize:14}}>vs {m.opponent}</div>
+                      <div style={{fontSize:12,color:"#78909c",marginTop:2}}>{m.date} • {m.location} • {m.home?"🏠":"✈️"}</div>
+                    </div>
+                    {m.result && (
+                      <div style={{textAlign:"center",flexShrink:0}}>
+                        <div style={{fontSize:10,fontWeight:800,padding:"3px 10px",borderRadius:8,background:m.result==="victoire"?"#e8f5e9":m.result==="défaite"?"#ffebee":"#f5f5f5",color:m.result==="victoire"?"#2e7d32":m.result==="défaite"?"#c62828":"#616161",textTransform:"uppercase"}}>{m.result}</div>
+                        {m.score && <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:16,color:"#0d47a1",marginTop:2}}>{m.score}</div>}
+                      </div>
+                    )}
+                    {m.photoUrl && (
+                      <a href={m.photoUrl} target="_blank" rel="noreferrer" style={{flexShrink:0,fontSize:18}} title="Voir la feuille de match">📄</a>
+                    )}
                   </div>
+                  {isAdmin && (
+                    <div style={{marginTop:10,paddingTop:10,borderTop:"1px solid #f0f0f0"}}>
+                      {editingMatchResult===fbId ? (
+                        <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+                          <select defaultValue={m.result||""} id={`res-${fbId}`} style={{...C.input,width:"auto",padding:"6px 10px",fontSize:12}}>
+                            <option value="">À venir</option>
+                            <option value="victoire">Victoire</option>
+                            <option value="défaite">Défaite</option>
+                            <option value="nul">Nul</option>
+                          </select>
+                          <input id={`score-${fbId}`} defaultValue={m.score||""} placeholder="Score ex: 28-25" style={{...C.input,width:120,padding:"6px 10px",fontSize:12}}/>
+                          <button onClick={()=>saveMatchResult(m, document.getElementById(`res-${fbId}`).value, document.getElementById(`score-${fbId}`).value)} style={{background:"#1565c0",color:"white",border:"none",padding:"6px 14px",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:12}}>✓</button>
+                          <button onClick={()=>setEditingMatchResult(null)} style={{background:"#eceff1",color:"#546e7a",border:"none",padding:"6px 10px",borderRadius:8,cursor:"pointer",fontSize:12}}>✕</button>
+                        </div>
+                      ) : (
+                        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                          <button onClick={()=>setEditingMatchResult(fbId)} style={{background:"#e3f2fd",color:"#1565c0",border:"none",padding:"6px 12px",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:12}}>🏆 Résultat</button>
+                          <label style={{background:"#e3f2fd",color:"#1565c0",border:"none",padding:"6px 12px",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:12}}>
+                            {uploadingPhotoId===fbId ? "Envoi..." : "📄 Feuille de match"}
+                            <input type="file" accept="image/*" onChange={e=>uploadMatchPhoto(m, e.target.files[0])} style={{display:"none"}}/>
+                          </label>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}
