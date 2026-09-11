@@ -793,9 +793,12 @@ export default function App() {
                       <div style={{fontSize:12,color:"#78909c",marginTop:2}}>{m.date} • {m.location} • {m.home?"🏠":"✈️"}</div>
                     </div>
                     {m.result && (
-                      <div style={{textAlign:"center",flexShrink:0}}>
-                        <div style={{fontSize:10,fontWeight:800,padding:"3px 10px",borderRadius:8,background:m.result==="victoire"?"#e8f5e9":m.result==="défaite"?"#ffebee":"#f5f5f5",color:m.result==="victoire"?"#2e7d32":m.result==="défaite"?"#c62828":"#616161",textTransform:"uppercase"}}>{m.result}</div>
-                        {m.score && <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:16,color:"#0d47a1",marginTop:2}}>{m.score}</div>}
+                      <div style={{display:"flex",flexDirection:"column",alignItems:"center",flexShrink:0,gap:2}}>
+                        <div style={{display:"flex",alignItems:"center",gap:5}}>
+                          <span style={{width:9,height:9,borderRadius:"50%",background:m.result==="victoire"?"#2e7d32":m.result==="défaite"?"#c62828":"#9e9e9e",display:"inline-block",flexShrink:0}}/>
+                          <span style={{fontSize:11,fontWeight:800,color:m.result==="victoire"?"#2e7d32":m.result==="défaite"?"#c62828":"#616161",textTransform:"uppercase"}}>{m.result}</span>
+                        </div>
+                        {m.score && <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:18,color:"#0d47a1"}}>{m.score}</div>}
                       </div>
                     )}
                   </div>
