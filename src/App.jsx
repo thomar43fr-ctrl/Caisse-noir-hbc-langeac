@@ -37,31 +37,7 @@ function getPlayerInfractionStats(entries) {
 
 const NAV_ITEMS = ["Dashboard","Paiements","Joueurs","Règles","Calendrier","Stats"];
 
-const WEIGHT_INFRACTIONS = [
-  {player:"Hugo", startWeight:97.1, midWeight:96.9},
-  {player:"Adrien", startWeight:101.4, midWeight:101.4},
-  {player:"Yanis", startWeight:90.1, midWeight:88.2},
-  {player:"Fred", startWeight:114.6, midWeight:112.2},
-  {player:"Paul", startWeight:104.2, midWeight:98.6},
-  {player:"Meyro", startWeight:85.1, midWeight:85.1},
-  {player:"David", startWeight:80.0, midWeight:78.2},
-  {player:"Lenny", startWeight:82.8, midWeight:81.8},
-  {player:"Gabin", startWeight:76.0, midWeight:77.1},
-  {player:"Thomas", startWeight:91.1, midWeight:96.0},
-  {player:"Killian", startWeight:76.4, midWeight:77.7},
-  {player:"Alexis", startWeight:70.6, midWeight:70.2},
-  {player:"Simon", startWeight:75.8, midWeight:76.1},
-  {player:"Rémi", startWeight:75.8, midWeight:75.8},
-  {player:"Théo", startWeight:87.1, midWeight:86.0},
-  {player:"Benjamin", startWeight:94.8, midWeight:93.3},
-  {player:"Mathieu", startWeight:79.8, midWeight:82.1},
-  {player:"Coco", startWeight:94.9, midWeight:95.4},
-  {player:"Arthur", startWeight:76.2, midWeight:75.5},
-  {player:"Bruno", startWeight:80.0, midWeight:79.5},
-  {player:"Romain B.", startWeight:84.3, midWeight:88.0},
-  {player:"Clément", startWeight:91.1, midWeight:91.8},
-  {player:"Kevin", startWeight:75.4, midWeight:74.5},
-];
+const WEIGHT_INFRACTIONS = [];
 
 export default function App() {
   const [rules, setRules] = useState(INITIAL_RULES);
@@ -103,8 +79,8 @@ export default function App() {
       setUser(u);
       if (u) {
         try {
-          const userDoc = await getDoc(doc(db, "users", u.uid));
-          setIsAdmin(userDoc.exists() && userDoc.data().role === "admin");
+          const adminDoc = await getDoc(doc(db, "admins", u.email));
+          setIsAdmin(adminDoc.exists());
         } catch(e) { setIsAdmin(false); }
       } else { setIsAdmin(false); setLoading(false); }
     });
