@@ -8,7 +8,8 @@ import {
   signOut, onAuthStateChanged
 } from "firebase/auth";
 import { INITIAL_RULES, INITIAL_PAYMENTS, INITIAL_CALENDAR } from "./data";
-import { HISTORICAL_MATCHES } from "./matches";
+
+const HISTORICAL_MATCHES = [];
 
 function parseMatchDate(str) {
   if (!str) return null;
@@ -188,15 +189,12 @@ export default function App() {
   }, [playerStats, isAdmin]);
 
   const totalCaisse = useMemo(() => payments.reduce((s,p) => s+p.total, 0), [payments]);
-  // Les matchs "Hors match" (infractions ajoutées sans match lié) ne doivent jamais
-  // apparaître dans les classements / listes de matchs : on les exclut ici, une fois pour toutes.
   const matchTotals = useMemo(() => matches
     .filter(m => m.match !== HORS_MATCH_LABEL)
     .map(m => ({...m, total: (m.entries||[]).reduce((s,e) => s+e.amount, 0)})), [matches]);
   const topOffenders = useMemo(() => Object.entries(playerStats).filter(([,s]) => s.total > 0).sort((a,b) => b[1].total-a[1].total).slice(0,5), [playerStats]);
   const topChaboula = useMemo(() => Object.entries(playerStats).sort((a,b) => b[1].chaboula-a[1].chaboula).slice(0,5), [playerStats]);
 
-  // Retrouve le document "matches" lié à un match du calendrier (même id)
   const getMatchDoc = (calMatch) => {
     if (!calMatch) return null;
     const calId = calMatch.fbId || String(calMatch.id);
@@ -269,7 +267,6 @@ export default function App() {
       if (currentW) {
         weightHandled = true;
         if (weightPeriod === "avant") {
-          // Pesée de référence : on enregistre le poids de début de saison, sans amende.
           await setDoc(doc(db, "weights", player), {...wd, player, startWeight: currentW}, {merge: true});
         } else if (weightPeriod === "mi") {
           const baseW = wd.startWeight || parseFloat(weightStart) || 0;
@@ -292,15 +289,13 @@ export default function App() {
     }
 
     if (customDetail && customAmount) entries.push({player, amount: parseFloat(customAmount)||0, detail: customDetail});
-    if (!entries.length && !weightHandled) { showToast("Coche au moins une règle"); return; }
+    if (!entries.length && !weightHandled) { showToast("Coche au moins une règle ou saisis un poids valide"); return; }
     if (!entries.length && weightHandled) {
       setNewInfraction(prev => ({...prev, player:"", checkedRules:{}, useWeight:false, weightPeriod:"avant", weightStart:"", weightCurrent:"", customDetail:"", customAmount:""}));
       showToast(`Poids de référence enregistré pour ${player} ✓`);
       return;
     }
 
-    // Le match est lié au calendrier : on réutilise l'id du match du calendrier
-    // comme id du document "matches", pour que les deux restent synchronisés.
     let matchDocId, matchLabelFinal, matchDateFinal, matchSortKeyFinal;
     if (calMatchId) {
       const calMatch = calendar.find(c => (c.fbId||String(c.id)) === calMatchId);
@@ -365,7 +360,6 @@ export default function App() {
 
   const calendarEq1 = useMemo(() => sortCalendarEntries(calendar.filter(m => (m.team||"Éq1") === "Éq1")), [calendar]);
   const calendarEq2 = useMemo(() => sortCalendarEntries(calendar.filter(m => m.team === "Éq2")), [calendar]);
-  // Gardé pour compatibilité : liste complète triée (toutes équipes confondues), utilisée dans le sélecteur d'infractions
   const sortedCalendar = useMemo(() => sortCalendarEntries(calendar), [calendar]);
 
   const today0 = new Date(new Date().setHours(0,0,0,0));
@@ -415,7 +409,6 @@ export default function App() {
     label: {fontSize:11,fontWeight:700,color:"#78909c",display:"block",marginBottom:4,textTransform:"uppercase"},
   };
 
-  // Rendu d'une carte de match du calendrier (réutilisé pour Équipe 1 et Équipe 2)
   const renderCalCard = (m, nextId) => {
     const fbId = m.fbId || String(m.id);
     const isNext = fbId === nextId;
