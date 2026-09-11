@@ -305,6 +305,14 @@ export default function App() {
     if (entry) {
       const p = payments.find(x => x.player === entry.player);
       if (p) await updateDoc(doc(db, "payments", p.fbId||entry.player), {total: Math.max(0, p.total - entry.amount)});
+      const det = (entry.detail||"").toLowerCase();
+      if (det.includes("pesée mi-saison")) {
+        const wd = weights.find(w => w.player === entry.player);
+        if (wd) await updateDoc(doc(db, "weights", wd.fbId||entry.player), {midWeight: null});
+      } else if (det.includes("pesée fin de saison")) {
+        const wd = weights.find(w => w.player === entry.player);
+        if (wd) await updateDoc(doc(db, "weights", wd.fbId||entry.player), {endWeight: null});
+      }
     }
     showToast("Infraction supprimée");
   };
@@ -847,32 +855,36 @@ export default function App() {
               <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:20,color:"#e65100",flexShrink:0}}>0,50€/100g</div>
             </div>
             <div style={{...C.card,marginBottom:16}}>
-              <h3 style={C.h3}>⚖️ Poids mi-saison — Amendes calculées</h3>
+              <h3 style={C.h3}>⚖️ Pesées & amendes de poids</h3>
               <div style={{overflowX:"auto"}}>
                 <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
                   <thead><tr style={{background:"#e3f2fd"}}>{["Joueur","Début saison","Mi-saison","Diff. (début→mi)","Amende","Fin de saison","Diff. (mi→fin)"].map(h=><th key={h} style={{padding:"8px 12px",textAlign:"left",fontFamily:"'Bebas Neue',sans-serif",fontSize:14,color:"#0d47a1",whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead>
                   <tbody>
-                    {weights.filter(w=>w.startWeight&&w.midWeight).map((w,i) => {
-                      const diffG = Math.round((w.midWeight - w.startWeight) * 1000);
-                      const amende = calcWeightAmount(w.startWeight, w.midWeight);
-                      const isUp = diffG > 0; const isZero = diffG === 0;
+                     {weights.filter(w=>w.startWeight||w.midWeight||w.endWeight).map((w,i) => {
+                      const hasStart = !!w.startWeight;
+                      const hasMid = !!w.midWeight;
                       const hasEnd = !!w.endWeight;
-                      const diffEndG = hasEnd ? Math.round((w.endWeight - w.midWeight) * 1000) : null;
-                      const isEndUp = hasEnd && diffEndG > 0; const isEndZero = hasEnd && diffEndG === 0;
+                      const canDiffMid = hasStart && hasMid;
+                      const diffG = canDiffMid ? Math.round((w.midWeight - w.startWeight) * 1000) : null;
+                      const amende = canDiffMid ? calcWeightAmount(w.startWeight, w.midWeight) : 0;
+                      const isUp = diffG > 0; const isZero = diffG === 0;
+                      const canDiffEnd = hasMid && hasEnd;
+                      const diffEndG = canDiffEnd ? Math.round((w.endWeight - w.midWeight) * 1000) : null;
+                      const isEndUp = canDiffEnd && diffEndG > 0; const isEndZero = canDiffEnd && diffEndG === 0;
                       return (
                         <tr key={w.player} style={{background:i%2===0?"white":"#fafafa",borderBottom:"1px solid #f0f0f0"}}>
                           <td style={{padding:"8px 12px",fontWeight:700,color:"#1a237e"}}>{w.player}</td>
-                          <td style={{padding:"8px 12px",color:"#546e7a"}}>{w.startWeight} kg</td>
-                          <td style={{padding:"8px 12px",color:"#546e7a"}}>{w.midWeight} kg</td>
-                          <td style={{padding:"8px 12px",fontWeight:700,color:isZero?"#78909c":isUp?"#e53935":"#2e7d32"}}>{isZero?"=":`${isUp?"+":""}${diffG}g`}</td>
-                          <td style={{padding:"8px 12px",fontFamily:"'Bebas Neue',sans-serif",fontSize:17,color:amende>0?"#e65100":"#2e7d32"}}>{amende > 0 ? `${amende.toFixed(2)}€` : "0€"}</td>
+                          <td style={{padding:"8px 12px",color:hasStart?"#546e7a":"#b0bec5"}}>{hasStart ? `${w.startWeight} kg` : "—"}</td>
+                          <td style={{padding:"8px 12px",color:hasMid?"#546e7a":"#b0bec5"}}>{hasMid ? `${w.midWeight} kg` : "—"}</td>
+                          <td style={{padding:"8px 12px",fontWeight:700,color:!canDiffMid?"#b0bec5":isZero?"#78909c":isUp?"#e53935":"#2e7d32"}}>{!canDiffMid ? "—" : (isZero?"=":`${isUp?"+":""}${diffG}g`)}</td>
+                          <td style={{padding:"8px 12px",fontFamily:"'Bebas Neue',sans-serif",fontSize:17,color:amende>0?"#e65100":"#2e7d32"}}>{!canDiffMid ? "—" : (amende > 0 ? `${amende.toFixed(2)}€` : "0€")}</td>
                           <td style={{padding:"8px 12px",color:hasEnd?"#546e7a":"#b0bec5"}}>{hasEnd ? `${w.endWeight} kg` : "—"}</td>
-                          <td style={{padding:"8px 12px",fontWeight:700,color:!hasEnd?"#b0bec5":isEndZero?"#78909c":isEndUp?"#e53935":"#2e7d32"}}>{hasEnd ? (isEndZero?"=":`${isEndUp?"+":""}${diffEndG}g`) : "—"}</td>
+                          <td style={{padding:"8px 12px",fontWeight:700,color:!canDiffEnd?"#b0bec5":isEndZero?"#78909c":isEndUp?"#e53935":"#2e7d32"}}>{!canDiffEnd ? "—" : (isEndZero?"=":`${isEndUp?"+":""}${diffEndG}g`)}</td>
                         </tr>
                       );
                     })}
-                    {weights.filter(w=>w.startWeight&&w.midWeight).length === 0 && (
-                      <tr><td colSpan={7} style={{padding:"16px",textAlign:"center",color:"#90a4ae"}}>Aucune pesée mi-saison enregistrée pour l'instant</td></tr>
+                    {weights.filter(w=>w.startWeight||w.midWeight||w.endWeight).length === 0 && (
+                      <tr><td colSpan={7} style={{padding:"16px",textAlign:"center",color:"#90a4ae"}}>Aucune pesée enregistrée pour l'instant</td></tr>
                     )}
                   </tbody>
                 </table>
