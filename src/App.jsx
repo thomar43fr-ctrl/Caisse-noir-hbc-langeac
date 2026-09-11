@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from "react";
-import { db, auth, storage } from "./firebase";
+import { db, auth } from "./firebase";
 import {
   collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, writeBatch, getDocs, getDoc
 } from "firebase/firestore";
@@ -7,7 +7,6 @@ import {
   createUserWithEmailAndPassword, signInWithEmailAndPassword,
   signOut, onAuthStateChanged
 } from "firebase/auth";
-import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { INITIAL_RULES, INITIAL_PAYMENTS, INITIAL_CALENDAR } from "./data";
 import { HISTORICAL_MATCHES } from "./matches";
 
@@ -69,7 +68,6 @@ export default function App() {
   const [newInfraction, setNewInfraction] = useState({player:"",ruleId:"",customDetail:"",customAmount:"",matchLabel:"",weightStart:"",weightCurrent:""});
   const [newCalMatch, setNewCalMatch] = useState({date:"",opponent:"",home:true,location:"",team:"Éq1"});
   const [editingMatchResult, setEditingMatchResult] = useState(null);
-  const [uploadingPhotoId, setUploadingPhotoId] = useState(null);
   const [editingPayment, setEditingPayment] = useState(null);
   const [paymentInput, setPaymentInput] = useState("");
   const [loading, setLoading] = useState(true);
@@ -303,22 +301,6 @@ export default function App() {
     await updateDoc(doc(db, "calendar", m.fbId || String(m.id)), {result, score});
     setEditingMatchResult(null);
     showToast("Résultat enregistré ✓");
-  };
-
-  const uploadMatchPhoto = async (m, file) => {
-    if (!file) return;
-    const fbId = m.fbId || String(m.id);
-    setUploadingPhotoId(fbId);
-    try {
-      const fileRef = ref(storage, `feuilles-de-match/${fbId}-${Date.now()}`);
-      await uploadBytes(fileRef, file);
-      const url = await getDownloadURL(fileRef);
-      await updateDoc(doc(db, "calendar", fbId), {photoUrl: url});
-      showToast("Feuille de match ajoutée ✓");
-    } catch(e) {
-      showToast("Erreur lors de l'envoi de la photo");
-    }
-    setUploadingPhotoId(null);
   };
 
   const savePayment = async (playerName) => {
@@ -816,9 +798,6 @@ export default function App() {
                         {m.score && <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:16,color:"#0d47a1",marginTop:2}}>{m.score}</div>}
                       </div>
                     )}
-                    {m.photoUrl && (
-                      <a href={m.photoUrl} target="_blank" rel="noreferrer" style={{flexShrink:0,fontSize:18}} title="Voir la feuille de match">📄</a>
-                    )}
                   </div>
                   {isAdmin && (
                     <div style={{marginTop:10,paddingTop:10,borderTop:"1px solid #f0f0f0"}}>
@@ -835,13 +814,7 @@ export default function App() {
                           <button onClick={()=>setEditingMatchResult(null)} style={{background:"#eceff1",color:"#546e7a",border:"none",padding:"6px 10px",borderRadius:8,cursor:"pointer",fontSize:12}}>✕</button>
                         </div>
                       ) : (
-                        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-                          <button onClick={()=>setEditingMatchResult(fbId)} style={{background:"#e3f2fd",color:"#1565c0",border:"none",padding:"6px 12px",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:12}}>🏆 Résultat</button>
-                          <label style={{background:"#e3f2fd",color:"#1565c0",border:"none",padding:"6px 12px",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:12}}>
-                            {uploadingPhotoId===fbId ? "Envoi..." : "📄 Feuille de match"}
-                            <input type="file" accept="image/*" onChange={e=>uploadMatchPhoto(m, e.target.files[0])} style={{display:"none"}}/>
-                          </label>
-                        </div>
+                        <button onClick={()=>setEditingMatchResult(fbId)} style={{background:"#e3f2fd",color:"#1565c0",border:"none",padding:"6px 12px",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:12}}>🏆 Résultat</button>
                       )}
                     </div>
                   )}
