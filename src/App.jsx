@@ -19,6 +19,14 @@ function parseMatchDate(str) {
   return new Date(y, m - 1, d);
 }
 
+function sortCalendarEntries(list) {
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const withDates = list.map(m => ({ ...m, _d: parseMatchDate(m.date) }));
+  const upcoming = withDates.filter(m => m._d && m._d >= today).sort((a, b) => a._d - b._d);
+  const past = withDates.filter(m => !m._d || m._d < today).sort((a, b) => (b._d || 0) - (a._d || 0));
+  return [...upcoming, ...past];
+}
+
 function getPlayerInfractionStats(entries) {
   const counts = {};
   entries.forEach(e => {
@@ -46,6 +54,8 @@ function getPlayerInfractionStats(entries) {
 
 const NAV_ITEMS = ["Dashboard","Paiements","Joueurs","Règles","Calendrier","Stats"];
 
+// Renseigne ici les pesées de chaque joueur : { player, startWeight, midWeight, endWeight }
+// endWeight est optionnel tant que la pesée de fin de saison n'a pas eu lieu.
 const WEIGHT_INFRACTIONS = [];
 
 export default function App() {
@@ -65,11 +75,12 @@ export default function App() {
   const [showAddPlayer, setShowAddPlayer] = useState(false);
   const [newPlayerName, setNewPlayerName] = useState("");
   const [editingPlayerName, setEditingPlayerName] = useState(null);
-  const [newInfraction, setNewInfraction] = useState({player:"",matchLabel:"",checkedRules:{},useWeight:false,customDetail:"",customAmount:"",weightStart:"",weightCurrent:""});
+  const [newInfraction, setNewInfraction] = useState({player:"",calMatchId:"",checkedRules:{},useWeight:false,customDetail:"",customAmount:"",weightStart:"",weightCurrent:""});
   const [newCalMatch, setNewCalMatch] = useState({date:"",opponent:"",home:true,location:"",team:"Éq1"});
   const [editingMatchResult, setEditingMatchResult] = useState(null);
   const [editingPayment, setEditingPayment] = useState(null);
   const [paymentInput, setPaymentInput] = useState("");
+  const [viewMatchDetail, setViewMatchDetail] = useState(null);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState(null);
 
@@ -177,6 +188,13 @@ export default function App() {
   const topOffenders = useMemo(() => Object.entries(playerStats).sort((a,b) => b[1].total-a[1].total).slice(0,5), [playerStats]);
   const topChaboula = useMemo(() => Object.entries(playerStats).sort((a,b) => b[1].chaboula-a[1].chaboula).slice(0,5), [playerStats]);
 
+  // Retrouve le document "matches" lié à un match du calendrier (même id)
+  const getMatchDoc = (calMatch) => {
+    if (!calMatch) return null;
+    const calId = calMatch.fbId || String(calMatch.id);
+    return matches.find(m => (m.fbId || String(m.id)) === calId);
+  };
+
   const calcWeightAmount = (startWeight, currentWeight) => {
     if (!startWeight || !currentWeight) return 0;
     const diffG = Math.abs((parseFloat(currentWeight) - parseFloat(startWeight)) * 1000);
@@ -225,7 +243,7 @@ export default function App() {
   const toggleRule = (id) => setNewInfraction(p => ({...p, checkedRules: {...p.checkedRules, [id]: !p.checkedRules[id]}}));
 
   const addInfraction = async () => {
-    const { player, matchLabel, checkedRules, useWeight, weightStart, weightCurrent, customDetail, customAmount } = newInfraction;
+    const { player, calMatchId, checkedRules, useWeight, weightStart, weightCurrent, customDetail, customAmount } = newInfraction;
     if (!player) { showToast("Choisis un joueur"); return; }
     const entries = [];
     rules.forEach(r => { if (checkedRules[r.id]) entries.push({player, amount:r.amount, detail:r.name}); });
@@ -242,13 +260,31 @@ export default function App() {
     if (customDetail && customAmount) entries.push({player, amount: parseFloat(customAmount)||0, detail: customDetail});
     if (!entries.length) { showToast("Coche au moins une règle"); return; }
 
-    const matchLabelFinal = matchLabel || "Hors match";
-    const existing = matches.find(m => m.match === matchLabelFinal);
+    // Le match est lié au calendrier : on réutilise l'id du match du calendrier
+    // comme id du document "matches", pour que les deux restent synchronisés.
+    let matchDocId, matchLabelFinal, matchDateFinal, matchSortKeyFinal;
+    if (calMatchId) {
+      const calMatch = calendar.find(c => (c.fbId||String(c.id)) === calMatchId);
+      matchDocId = calMatchId;
+      matchLabelFinal = calMatch ? `vs ${calMatch.opponent}` : "Match";
+      matchDateFinal = calMatch ? calMatch.date : "";
+      matchSortKeyFinal = calMatch ? (calMatch.sortKey||0) : 999;
+    } else {
+      matchLabelFinal = "Hors match";
+      matchDateFinal = new Date().toLocaleDateString("fr-FR",{month:"short",year:"numeric"});
+      matchSortKeyFinal = 999;
+    }
+
+    const existing = calMatchId
+      ? matches.find(m => (m.fbId||String(m.id)) === matchDocId)
+      : matches.find(m => m.match === "Hors match" && !m.calMatchId);
+
     if (existing) {
       await updateDoc(doc(db, "matches", existing.fbId||String(existing.id)), {entries: [...(existing.entries||[]), ...entries]});
     } else {
-      const nm = {id: Date.now(), match: matchLabelFinal, date: new Date().toLocaleDateString("fr-FR",{month:"short",year:"numeric"}), sortKey: 999, entries};
-      await setDoc(doc(db, "matches", String(nm.id)), nm);
+      const idToUse = matchDocId || Date.now();
+      const nm = {id: idToUse, match: matchLabelFinal, date: matchDateFinal, sortKey: matchSortKeyFinal, entries, ...(calMatchId ? {calMatchId} : {})};
+      await setDoc(doc(db, "matches", String(idToUse)), nm);
     }
     const totalAdded = entries.reduce((s,e)=>s+e.amount,0);
     const p = payments.find(x => x.player === player);
@@ -288,16 +324,15 @@ export default function App() {
     setNewCalMatch({date:"",opponent:"",home:true,location:"",team:"Éq1"}); setShowAddCalendar(false); showToast("Match ajouté ✓");
   };
 
-  const sortedCalendar = useMemo(() => {
-    const today = new Date(); today.setHours(0,0,0,0);
-    const withDates = calendar.map(m => ({...m, _d: parseMatchDate(m.date)}));
-    const upcoming = withDates.filter(m => m._d && m._d >= today).sort((a,b)=>a._d-b._d);
-    const past = withDates.filter(m => !m._d || m._d < today).sort((a,b)=>(b._d||0)-(a._d||0));
-    return [...upcoming, ...past];
-  }, [calendar]);
+  const calendarEq1 = useMemo(() => sortCalendarEntries(calendar.filter(m => (m.team||"Éq1") === "Éq1")), [calendar]);
+  const calendarEq2 = useMemo(() => sortCalendarEntries(calendar.filter(m => m.team === "Éq2")), [calendar]);
+  // Gardé pour compatibilité : liste complète triée (toutes équipes confondues), utilisée dans le sélecteur d'infractions
+  const sortedCalendar = useMemo(() => sortCalendarEntries(calendar), [calendar]);
 
-  const nextMatchFbId = sortedCalendar.find(m => m._d && m._d >= new Date(new Date().setHours(0,0,0,0)))?.fbId
-    || sortedCalendar.find(m => m._d && m._d >= new Date(new Date().setHours(0,0,0,0)))?.id;
+  const today0 = new Date(new Date().setHours(0,0,0,0));
+  const getNextId = (list) => { const n = list.find(m => m._d && m._d >= today0); return n ? (n.fbId||String(n.id)) : null; };
+  const nextMatchFbId1 = getNextId(calendarEq1);
+  const nextMatchFbId2 = getNextId(calendarEq2);
 
   const saveMatchResult = async (m, result, score) => {
     await updateDoc(doc(db, "calendar", m.fbId || String(m.id)), {result, score});
@@ -331,6 +366,55 @@ export default function App() {
     h3: {margin:"0 0 16px", color:"#0d47a1", fontFamily:"'Bebas Neue',sans-serif", fontSize:20, letterSpacing:1},
     input: {width:"100%",padding:"10px",borderRadius:8,border:"2px solid #e3f2fd",fontSize:14,boxSizing:"border-box",fontFamily:"'Nunito',sans-serif"},
     label: {fontSize:11,fontWeight:700,color:"#78909c",display:"block",marginBottom:4,textTransform:"uppercase"},
+  };
+
+  // Rendu d'une carte de match du calendrier (réutilisé pour Équipe 1 et Équipe 2)
+  const renderCalCard = (m, nextId) => {
+    const fbId = m.fbId || String(m.id);
+    const isNext = fbId === nextId;
+    const matchDoc = getMatchDoc(m);
+    const matchTotal = matchDoc ? (matchDoc.entries||[]).reduce((s,e) => s+e.amount, 0) : 0;
+    return (
+      <div key={fbId} onClick={()=>setViewMatchDetail(m)} style={{background:"white",borderRadius:14,padding:"12px 16px",boxShadow:isNext?"0 4px 16px rgba(21,101,192,0.25)":"0 2px 8px rgba(0,0,0,0.06)",borderLeft:`4px solid ${m.home?"#1565c0":"#42a5f5"}`,outline:isNext?"2px solid #1565c0":"none",cursor:"pointer"}}>
+        <div style={{display:"flex",alignItems:"center",gap:14}}>
+          <div style={{width:38,height:38,borderRadius:"50%",background:m.team==="Éq2"?"#e3f2fd":"#1565c0",display:"flex",alignItems:"center",justifyContent:"center",color:m.team==="Éq2"?"#1565c0":"white",fontFamily:"'Bebas Neue',sans-serif",fontSize:12,flexShrink:0}}>{m.team}</div>
+          <div style={{flex:1,minWidth:0}}>
+            {isNext && <div style={{display:"inline-block",background:"#1565c0",color:"white",fontSize:10,fontWeight:800,padding:"2px 8px",borderRadius:10,marginBottom:4,textTransform:"uppercase",letterSpacing:0.5}}>Prochain match</div>}
+            <div style={{fontWeight:800,color:"#0d47a1",fontSize:14}}>vs {m.opponent}</div>
+            <div style={{fontSize:12,color:"#78909c",marginTop:2}}>{m.date} • {m.location} • {m.home?"🏠":"✈️"}</div>
+            {matchTotal > 0 && <div style={{fontSize:11,color:"#1565c0",fontWeight:700,marginTop:4}}>💰 {matchTotal}€ d'amendes</div>}
+          </div>
+          {m.result && (
+            <div style={{display:"flex",flexDirection:"column",alignItems:"center",flexShrink:0,gap:2}}>
+              <div style={{display:"flex",alignItems:"center",gap:5}}>
+                <span style={{width:9,height:9,borderRadius:"50%",background:m.result==="victoire"?"#2e7d32":m.result==="défaite"?"#c62828":"#9e9e9e",display:"inline-block",flexShrink:0}}/>
+                <span style={{fontSize:11,fontWeight:800,color:m.result==="victoire"?"#2e7d32":m.result==="défaite"?"#c62828":"#616161",textTransform:"uppercase"}}>{m.result}</span>
+              </div>
+              {m.score && <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:18,color:"#0d47a1"}}>{m.score}</div>}
+            </div>
+          )}
+        </div>
+        {isAdmin && (
+          <div style={{marginTop:10,paddingTop:10,borderTop:"1px solid #f0f0f0"}} onClick={e=>e.stopPropagation()}>
+            {editingMatchResult===fbId ? (
+              <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+                <select defaultValue={m.result||""} id={`res-${fbId}`} style={{...C.input,width:"auto",padding:"6px 10px",fontSize:12}}>
+                  <option value="">À venir</option>
+                  <option value="victoire">Victoire</option>
+                  <option value="défaite">Défaite</option>
+                  <option value="nul">Nul</option>
+                </select>
+                <input id={`score-${fbId}`} defaultValue={m.score||""} placeholder="Score ex: 28-25" style={{...C.input,width:120,padding:"6px 10px",fontSize:12}}/>
+                <button onClick={()=>saveMatchResult(m, document.getElementById(`res-${fbId}`).value, document.getElementById(`score-${fbId}`).value)} style={{background:"#1565c0",color:"white",border:"none",padding:"6px 14px",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:12}}>✓</button>
+                <button onClick={()=>setEditingMatchResult(null)} style={{background:"#eceff1",color:"#546e7a",border:"none",padding:"6px 10px",borderRadius:8,cursor:"pointer",fontSize:12}}>✕</button>
+              </div>
+            ) : (
+              <button onClick={()=>setEditingMatchResult(fbId)} style={{background:"#e3f2fd",color:"#1565c0",border:"none",padding:"6px 12px",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:12}}>🏆 Résultat</button>
+            )}
+          </div>
+        )}
+      </div>
+    );
   };
 
   if (loading) return (
@@ -388,6 +472,51 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {viewMatchDetail && (() => {
+        const m = viewMatchDetail;
+        const matchDoc = getMatchDoc(m);
+        const entries = matchDoc ? (matchDoc.entries||[]) : [];
+        const total = entries.reduce((s,e)=>s+e.amount,0);
+        return (
+          <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",padding:16}} onClick={()=>setViewMatchDetail(null)}>
+            <div style={{background:"white",borderRadius:20,padding:24,width:"100%",maxWidth:480,maxHeight:"85vh",overflowY:"auto",boxShadow:"0 20px 60px rgba(0,0,0,0.3)"}} onClick={e=>e.stopPropagation()}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:16,gap:10}}>
+                <div>
+                  <div style={{fontSize:11,fontWeight:800,color:"#78909c",textTransform:"uppercase"}}>{m.team === "Éq2" ? "Équipe 2" : "Équipe 1"}</div>
+                  <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:24,color:"#0d47a1"}}>vs {m.opponent}</div>
+                  <div style={{fontSize:12,color:"#78909c",marginTop:2}}>{m.date} • {m.location} • {m.home?"🏠 Domicile":"✈️ Extérieur"}</div>
+                  {m.result && <div style={{marginTop:6,fontSize:12,fontWeight:800,color:m.result==="victoire"?"#2e7d32":m.result==="défaite"?"#c62828":"#616161"}}>{m.result.toUpperCase()} {m.score?`(${m.score})`:""}</div>}
+                </div>
+                <button onClick={()=>setViewMatchDetail(null)} style={{background:"#eceff1",color:"#546e7a",border:"none",width:30,height:30,borderRadius:8,cursor:"pointer",fontSize:14,flexShrink:0}}>✕</button>
+              </div>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,padding:"10px 14px",background:"#f0f6ff",borderRadius:10}}>
+                <span style={{fontWeight:700,color:"#1a237e",fontSize:13}}>Total amendes</span>
+                <span style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:22,color:"#1565c0"}}>{total}€</span>
+              </div>
+              {entries.length === 0 ? (
+                <div style={{color:"#90a4ae",padding:20,textAlign:"center"}}>Aucune infraction enregistrée pour ce match</div>
+              ) : (
+                entries.map((e,i) => (
+                  <div key={i} style={{display:"flex",alignItems:"center",padding:"8px 12px",background:"#f8fbff",borderRadius:8,marginBottom:6,borderLeft:`3px solid ${e.amount>10?"#e53935":e.amount>5?"#fb8c00":"#1565c0"}`}}>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontWeight:800,color:"#0d47a1",fontSize:13}}>{e.player}</div>
+                      <div style={{fontSize:12,color:"#546e7a"}}>{e.detail}</div>
+                    </div>
+                    <div style={{display:"flex",alignItems:"center",gap:8,flexShrink:0}}>
+                      <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:17,color:e.amount>10?"#e53935":e.amount>5?"#fb8c00":"#1565c0"}}>{e.amount}€</div>
+                      {isAdmin && matchDoc && <button onClick={()=>deleteInfraction(matchDoc.fbId||String(matchDoc.id), i)} style={{background:"#ffebee",color:"#e53935",border:"none",width:24,height:24,borderRadius:6,cursor:"pointer",fontSize:11}}>🗑</button>}
+                    </div>
+                  </div>
+                ))
+              )}
+              {isAdmin && (
+                <button onClick={()=>{ setNewInfraction(p=>({...p, calMatchId: m.fbId||String(m.id)})); setActiveTab("Joueurs"); setShowAddInfraction(true); setViewMatchDetail(null); }} style={{marginTop:14,width:"100%",background:"#1565c0",color:"white",border:"none",padding:"10px",borderRadius:10,cursor:"pointer",fontWeight:800,fontSize:13}}>+ Ajouter une infraction pour ce match</button>
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       <div style={{background:"linear-gradient(135deg,#1565c0 0%,#0d47a1 100%)",boxShadow:"0 4px 20px rgba(13,71,161,0.3)",position:"sticky",top:0,zIndex:100}}>
         <div style={{maxWidth:1200,margin:"0 auto",padding:"10px 16px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:8}}>
@@ -454,7 +583,7 @@ export default function App() {
               <div style={{...C.card,gridColumn:"1/-1"}}>
                 <h3 style={C.h3}>📅 Matchs (du plus récent)</h3>
                 <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(150px,1fr))",gap:10}}>
-                  {matchTotals.slice().sort((a,b)=>b.sortKey-a.sortKey).map(m => (
+                  {matchTotals.filter(m=>m.total>0).slice().sort((a,b)=>b.sortKey-a.sortKey).map(m => (
                     <div key={m.fbId||m.id} style={{background:"#f0f6ff",borderRadius:12,padding:"12px 14px",borderLeft:"4px solid #1565c0"}}>
                       <div style={{fontWeight:800,fontSize:11,color:"#0d47a1"}}>{m.match}</div>
                       <div style={{fontSize:11,color:"#78909c",marginTop:2}}>{m.date}</div>
@@ -608,13 +737,14 @@ export default function App() {
                         </select>
                       </div>
                       <div>
-                        <label style={C.label}>Match</label>
-                        <select value={newInfraction.matchLabel} onChange={e=>setNewInfraction(p=>({...p,matchLabel:e.target.value}))} style={C.input}>
+                        <label style={C.label}>Match (calendrier)</label>
+                        <select value={newInfraction.calMatchId} onChange={e=>setNewInfraction(p=>({...p,calMatchId:e.target.value}))} style={C.input}>
                           <option value="">Hors match</option>
-                          {matches.map(m=><option key={m.fbId||m.id} value={m.match}>{m.match}</option>)}
-                          <option value="__new__">+ Nouveau match</option>
+                          {sortedCalendar.map(m => (
+                            <option key={m.fbId||m.id} value={m.fbId||String(m.id)}>{m.team} — vs {m.opponent} ({m.date})</option>
+                          ))}
                         </select>
-                        {newInfraction.matchLabel==="__new__" && <input placeholder="Nom du match" onChange={e=>setNewInfraction(p=>({...p,matchLabel:e.target.value}))} style={{...C.input,marginTop:8}}/>}
+                        {!sortedCalendar.length && <div style={{fontSize:11,color:"#90a4ae",marginTop:4}}>Aucun match au calendrier pour l'instant — ajoute-le dans l'onglet Calendrier.</div>}
                       </div>
                     </div>
 
@@ -672,7 +802,7 @@ export default function App() {
                 )}
 
                 <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(150px,1fr))",gap:12}}>
-                  {players.sort((a,b)=>(playerStats[b]?.total||0)-(playerStats[a]?.total||0)).map(player => {
+                  {players.slice().sort((a,b)=>(playerStats[b]?.total||0)-(playerStats[a]?.total||0)).map(player => {
                     const isHidden = playersList.find(p=>p.name===player)?.hidden;
                     if (isHidden) return null;
                     return (
@@ -716,12 +846,15 @@ export default function App() {
               <h3 style={C.h3}>⚖️ Poids mi-saison — Amendes calculées</h3>
               <div style={{overflowX:"auto"}}>
                 <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
-                  <thead><tr style={{background:"#e3f2fd"}}>{["Joueur","Début saison","Mi-saison","Différence","Amende"].map(h=><th key={h} style={{padding:"8px 12px",textAlign:"left",fontFamily:"'Bebas Neue',sans-serif",fontSize:14,color:"#0d47a1"}}>{h}</th>)}</tr></thead>
+                  <thead><tr style={{background:"#e3f2fd"}}>{["Joueur","Début saison","Mi-saison","Diff. (début→mi)","Amende","Fin de saison","Diff. (mi→fin)"].map(h=><th key={h} style={{padding:"8px 12px",textAlign:"left",fontFamily:"'Bebas Neue',sans-serif",fontSize:14,color:"#0d47a1",whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead>
                   <tbody>
                     {WEIGHT_INFRACTIONS.filter(w=>w.startWeight&&w.midWeight).map((w,i) => {
                       const diffG = Math.round((w.midWeight - w.startWeight) * 1000);
                       const amende = calcWeightAmount(w.startWeight, w.midWeight);
                       const isUp = diffG > 0; const isZero = diffG === 0;
+                      const hasEnd = !!w.endWeight;
+                      const diffEndG = hasEnd ? Math.round((w.endWeight - w.midWeight) * 1000) : null;
+                      const isEndUp = hasEnd && diffEndG > 0; const isEndZero = hasEnd && diffEndG === 0;
                       return (
                         <tr key={w.player} style={{background:i%2===0?"white":"#fafafa",borderBottom:"1px solid #f0f0f0"}}>
                           <td style={{padding:"8px 12px",fontWeight:700,color:"#1a237e"}}>{w.player}</td>
@@ -729,6 +862,8 @@ export default function App() {
                           <td style={{padding:"8px 12px",color:"#546e7a"}}>{w.midWeight} kg</td>
                           <td style={{padding:"8px 12px",fontWeight:700,color:isZero?"#78909c":isUp?"#e53935":"#2e7d32"}}>{isZero?"=":`${isUp?"+":""}${diffG}g`}</td>
                           <td style={{padding:"8px 12px",fontFamily:"'Bebas Neue',sans-serif",fontSize:17,color:amende>0?"#e65100":"#2e7d32"}}>{amende > 0 ? `${amende.toFixed(2)}€` : "0€"}</td>
+                          <td style={{padding:"8px 12px",color:hasEnd?"#546e7a":"#b0bec5"}}>{hasEnd ? `${w.endWeight} kg` : "—"}</td>
+                          <td style={{padding:"8px 12px",fontWeight:700,color:!hasEnd?"#b0bec5":isEndZero?"#78909c":isEndUp?"#e53935":"#2e7d32"}}>{hasEnd ? (isEndZero?"=":`${isEndUp?"+":""}${diffEndG}g`) : "—"}</td>
                         </tr>
                       );
                     })}
@@ -791,52 +926,19 @@ export default function App() {
                 </div>
               </div>
             )}
-            <div style={{display:"flex",flexDirection:"column",gap:10}}>
-              {sortedCalendar.map(m => {
-                const fbId = m.fbId || String(m.id);
-                const isNext = fbId === nextMatchFbId;
-                const isPast = m._d && m._d < new Date(new Date().setHours(0,0,0,0));
-                return (
-                <div key={fbId} style={{background:"white",borderRadius:14,padding:"12px 16px",boxShadow:isNext?"0 4px 16px rgba(21,101,192,0.25)":"0 2px 8px rgba(0,0,0,0.06)",borderLeft:`4px solid ${m.home?"#1565c0":"#42a5f5"}`,outline:isNext?"2px solid #1565c0":"none"}}>
-                  <div style={{display:"flex",alignItems:"center",gap:14}}>
-                    <div style={{width:38,height:38,borderRadius:"50%",background:m.team==="Éq2"?"#e3f2fd":"#1565c0",display:"flex",alignItems:"center",justifyContent:"center",color:m.team==="Éq2"?"#1565c0":"white",fontFamily:"'Bebas Neue',sans-serif",fontSize:12,flexShrink:0}}>{m.team}</div>
-                    <div style={{flex:1,minWidth:0}}>
-                      {isNext && <div style={{display:"inline-block",background:"#1565c0",color:"white",fontSize:10,fontWeight:800,padding:"2px 8px",borderRadius:10,marginBottom:4,textTransform:"uppercase",letterSpacing:0.5}}>Prochain match</div>}
-                      <div style={{fontWeight:800,color:"#0d47a1",fontSize:14}}>vs {m.opponent}</div>
-                      <div style={{fontSize:12,color:"#78909c",marginTop:2}}>{m.date} • {m.location} • {m.home?"🏠":"✈️"}</div>
-                    </div>
-                    {m.result && (
-                      <div style={{display:"flex",flexDirection:"column",alignItems:"center",flexShrink:0,gap:2}}>
-                        <div style={{display:"flex",alignItems:"center",gap:5}}>
-                          <span style={{width:9,height:9,borderRadius:"50%",background:m.result==="victoire"?"#2e7d32":m.result==="défaite"?"#c62828":"#9e9e9e",display:"inline-block",flexShrink:0}}/>
-                          <span style={{fontSize:11,fontWeight:800,color:m.result==="victoire"?"#2e7d32":m.result==="défaite"?"#c62828":"#616161",textTransform:"uppercase"}}>{m.result}</span>
-                        </div>
-                        {m.score && <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:18,color:"#0d47a1"}}>{m.score}</div>}
-                      </div>
-                    )}
-                  </div>
-                  {isAdmin && (
-                    <div style={{marginTop:10,paddingTop:10,borderTop:"1px solid #f0f0f0"}}>
-                      {editingMatchResult===fbId ? (
-                        <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
-                          <select defaultValue={m.result||""} id={`res-${fbId}`} style={{...C.input,width:"auto",padding:"6px 10px",fontSize:12}}>
-                            <option value="">À venir</option>
-                            <option value="victoire">Victoire</option>
-                            <option value="défaite">Défaite</option>
-                            <option value="nul">Nul</option>
-                          </select>
-                          <input id={`score-${fbId}`} defaultValue={m.score||""} placeholder="Score ex: 28-25" style={{...C.input,width:120,padding:"6px 10px",fontSize:12}}/>
-                          <button onClick={()=>saveMatchResult(m, document.getElementById(`res-${fbId}`).value, document.getElementById(`score-${fbId}`).value)} style={{background:"#1565c0",color:"white",border:"none",padding:"6px 14px",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:12}}>✓</button>
-                          <button onClick={()=>setEditingMatchResult(null)} style={{background:"#eceff1",color:"#546e7a",border:"none",padding:"6px 10px",borderRadius:8,cursor:"pointer",fontSize:12}}>✕</button>
-                        </div>
-                      ) : (
-                        <button onClick={()=>setEditingMatchResult(fbId)} style={{background:"#e3f2fd",color:"#1565c0",border:"none",padding:"6px 12px",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:12}}>🏆 Résultat</button>
-                      )}
-                    </div>
-                  )}
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(300px,1fr))",gap:20}}>
+              <div>
+                <h3 style={{...C.h3,marginBottom:12}}>Équipe 1</h3>
+                <div style={{display:"flex",flexDirection:"column",gap:10}}>
+                  {calendarEq1.length ? calendarEq1.map(m => renderCalCard(m, nextMatchFbId1)) : <div style={{color:"#90a4ae",padding:20,textAlign:"center",background:"white",borderRadius:14}}>Aucun match programmé</div>}
                 </div>
-                );
-              })}
+              </div>
+              <div>
+                <h3 style={{...C.h3,marginBottom:12}}>Équipe 2</h3>
+                <div style={{display:"flex",flexDirection:"column",gap:10}}>
+                  {calendarEq2.length ? calendarEq2.map(m => renderCalCard(m, nextMatchFbId2)) : <div style={{color:"#90a4ae",padding:20,textAlign:"center",background:"white",borderRadius:14}}>Aucun match programmé</div>}
+                </div>
+              </div>
             </div>
           </div>
         )}
