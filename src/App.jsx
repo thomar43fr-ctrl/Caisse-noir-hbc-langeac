@@ -65,7 +65,7 @@ export default function App() {
   const [showAddPlayer, setShowAddPlayer] = useState(false);
   const [newPlayerName, setNewPlayerName] = useState("");
   const [editingPlayerName, setEditingPlayerName] = useState(null);
-  const [newInfraction, setNewInfraction] = useState({player:"",ruleId:"",customDetail:"",customAmount:"",matchLabel:"",weightStart:"",weightCurrent:""});
+  const [newInfraction, setNewInfraction] = useState({player:"",matchLabel:"",checkedRules:{},useWeight:false,customDetail:"",customAmount:"",weightStart:"",weightCurrent:""});
   const [newCalMatch, setNewCalMatch] = useState({date:"",opponent:"",home:true,location:"",team:"Éq1"});
   const [editingMatchResult, setEditingMatchResult] = useState(null);
   const [editingPayment, setEditingPayment] = useState(null);
@@ -222,39 +222,41 @@ export default function App() {
     showToast(`${oldName} → ${trimmed} ✓`);
   };
 
+  const toggleRule = (id) => setNewInfraction(p => ({...p, checkedRules: {...p.checkedRules, [id]: !p.checkedRules[id]}}));
+
   const addInfraction = async () => {
-    const isWeightRule = newInfraction.ruleId === "__weight__";
-    if (!newInfraction.player) return;
-    if (!isWeightRule && !newInfraction.ruleId && !newInfraction.customDetail) return;
-    let amount, detail;
-    if (isWeightRule) {
-      const wd = WEIGHT_INFRACTIONS.find(w => w.player === newInfraction.player);
-      const startW = wd ? wd.startWeight : parseFloat(newInfraction.weightStart)||0;
-      const currentW = parseFloat(newInfraction.weightCurrent)||0;
-      if (!currentW) { showToast("Entrez le poids actuel"); return; }
-      amount = calcWeightAmount(startW, currentW);
-      const diffG = Math.round((currentW - startW) * 1000);
-      detail = `Différence poids: ${diffG >= 0 ? "+" : ""}${diffG}g (${startW}kg → ${currentW}kg)`;
-    } else {
-      const rule = rules.find(r => String(r.id) === String(newInfraction.ruleId));
-      amount = newInfraction.ruleId ? (rule?.amount||0) : parseFloat(newInfraction.customAmount)||0;
-      detail = newInfraction.ruleId ? rule?.name : newInfraction.customDetail;
+    const { player, matchLabel, checkedRules, useWeight, weightStart, weightCurrent, customDetail, customAmount } = newInfraction;
+    if (!player) { showToast("Choisis un joueur"); return; }
+    const entries = [];
+    rules.forEach(r => { if (checkedRules[r.id]) entries.push({player, amount:r.amount, detail:r.name}); });
+    if (useWeight) {
+      const wd = WEIGHT_INFRACTIONS.find(w => w.player === player);
+      const startW = wd ? wd.startWeight : parseFloat(weightStart)||0;
+      const currentW = parseFloat(weightCurrent)||0;
+      if (currentW) {
+        const amount = calcWeightAmount(startW, currentW);
+        const diffG = Math.round((currentW - startW) * 1000);
+        entries.push({player, amount, detail:`Différence poids: ${diffG >= 0 ? "+" : ""}${diffG}g (${startW}kg → ${currentW}kg)`});
+      }
     }
-    const matchLabel = newInfraction.matchLabel || "Hors match";
-    const existing = matches.find(m => m.match === matchLabel);
+    if (customDetail && customAmount) entries.push({player, amount: parseFloat(customAmount)||0, detail: customDetail});
+    if (!entries.length) { showToast("Coche au moins une règle"); return; }
+
+    const matchLabelFinal = matchLabel || "Hors match";
+    const existing = matches.find(m => m.match === matchLabelFinal);
     if (existing) {
-      await updateDoc(doc(db, "matches", existing.fbId||String(existing.id)), {entries: [...(existing.entries||[]), {player:newInfraction.player, amount, detail}]});
+      await updateDoc(doc(db, "matches", existing.fbId||String(existing.id)), {entries: [...(existing.entries||[]), ...entries]});
     } else {
-      const nm = {id: Date.now(), match: matchLabel, date: new Date().toLocaleDateString("fr-FR",{month:"short",year:"numeric"}), sortKey: 999, entries: [{player:newInfraction.player, amount, detail}]};
+      const nm = {id: Date.now(), match: matchLabelFinal, date: new Date().toLocaleDateString("fr-FR",{month:"short",year:"numeric"}), sortKey: 999, entries};
       await setDoc(doc(db, "matches", String(nm.id)), nm);
     }
-    const player = newInfraction.player;
+    const totalAdded = entries.reduce((s,e)=>s+e.amount,0);
     const p = payments.find(x => x.player === player);
-    if (p) await updateDoc(doc(db, "payments", p.fbId||player), {total: (playerStats[player]?.total||0) + amount});
-    else await setDoc(doc(db, "payments", player), {player, total: amount, paid: 0});
-    setNewInfraction({player:"",ruleId:"",customDetail:"",customAmount:"",matchLabel:"",weightStart:"",weightCurrent:""});
-    setShowAddInfraction(false);
-    showToast(`Infraction ajoutée (${amount.toFixed(2)}€) ✓`);
+    if (p) await updateDoc(doc(db, "payments", p.fbId||player), {total: (playerStats[player]?.total||0) + totalAdded});
+    else await setDoc(doc(db, "payments", player), {player, total: totalAdded, paid: 0});
+
+    setNewInfraction(prev => ({...prev, player:"", checkedRules:{}, useWeight:false, weightStart:"", weightCurrent:"", customDetail:"", customAmount:""}));
+    showToast(`${entries.length} infraction(s) ajoutée(s) pour ${player} (${totalAdded.toFixed(2)}€) ✓`);
   };
 
   const deleteInfraction = async (matchId, entryIndex) => {
@@ -596,8 +598,8 @@ export default function App() {
 
                 {isAdmin && showAddInfraction && (
                   <div style={{...C.card,marginBottom:16}}>
-                    <h3 style={C.h3}>Ajouter une infraction</h3>
-                    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:12}}>
+                    <h3 style={C.h3}>Ajouter des infractions</h3>
+                    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:12,marginBottom:14}}>
                       <div>
                         <label style={C.label}>Joueur</label>
                         <select value={newInfraction.player} onChange={e=>setNewInfraction(p=>({...p,player:e.target.value}))} style={C.input}>
@@ -614,47 +616,58 @@ export default function App() {
                         </select>
                         {newInfraction.matchLabel==="__new__" && <input placeholder="Nom du match" onChange={e=>setNewInfraction(p=>({...p,matchLabel:e.target.value}))} style={{...C.input,marginTop:8}}/>}
                       </div>
-                      <div>
-                        <label style={C.label}>Règle</label>
-                        <select value={newInfraction.ruleId} onChange={e=>setNewInfraction(p=>({...p,ruleId:e.target.value}))} style={C.input}>
-                          <option value="">Personnalisée</option>
-                          <option value="__weight__">⚖️ Règle poids (0,50€/100g)</option>
-                          {rules.map(r=><option key={r.id} value={r.id}>{r.name} ({r.amount}€)</option>)}
-                        </select>
+                    </div>
+
+                    <label style={C.label}>Règles (coche tout ce qui s'applique)</label>
+                    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(220px,1fr))",gap:6,marginBottom:14,maxHeight:260,overflowY:"auto",padding:"8px",background:"#f8fbff",borderRadius:8}}>
+                      {rules.map(r => (
+                        <label key={r.id} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 8px",borderRadius:6,cursor:"pointer",background:newInfraction.checkedRules[r.id]?"#e3f2fd":"transparent"}}>
+                          <input type="checkbox" checked={!!newInfraction.checkedRules[r.id]} onChange={()=>toggleRule(r.id)}/>
+                          <span style={{fontSize:13,color:"#1a237e",flex:1}}>{r.name}</span>
+                          <span style={{fontSize:12,fontWeight:800,color:"#1565c0"}}>{r.amount}€</span>
+                        </label>
+                      ))}
+                    </div>
+
+                    <label style={{display:"flex",alignItems:"center",gap:8,marginBottom:10,cursor:"pointer"}}>
+                      <input type="checkbox" checked={newInfraction.useWeight} onChange={()=>setNewInfraction(p=>({...p,useWeight:!p.useWeight}))}/>
+                      <span style={{fontWeight:700,color:"#1a237e",fontSize:13}}>⚖️ Règle poids (0,50€/100g)</span>
+                    </label>
+                    {newInfraction.useWeight && (
+                      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:12,marginBottom:14}}>
+                        <div>
+                          <label style={C.label}>Poids début saison (kg)</label>
+                          {(() => { const wd = WEIGHT_INFRACTIONS.find(w => w.player === newInfraction.player); return wd ? (<div style={{padding:"10px",background:"#e3f2fd",borderRadius:8,fontWeight:700,color:"#1565c0",fontSize:14}}>{wd.startWeight} kg (auto)</div>) : (<input type="number" inputMode="decimal" value={newInfraction.weightStart||""} onChange={e=>setNewInfraction(p=>({...p,weightStart:e.target.value}))} placeholder="ex: 80.0" style={C.input}/>); })()}
+                        </div>
+                        <div>
+                          <label style={C.label}>Poids actuel (kg)</label>
+                          <input type="number" inputMode="decimal" value={newInfraction.weightCurrent||""} onChange={e=>setNewInfraction(p=>({...p,weightCurrent:e.target.value}))} placeholder="ex: 82.5" style={C.input}/>
+                        </div>
+                        {newInfraction.weightCurrent && (
+                          <div style={{display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",background:"#fff3e0",borderRadius:8,padding:12}}>
+                            <div style={{fontSize:11,fontWeight:700,color:"#e65100",textTransform:"uppercase"}}>Amende calculée</div>
+                            <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:24,color:"#e65100"}}>{calcWeightAmount(WEIGHT_INFRACTIONS.find(w=>w.player===newInfraction.player)?.startWeight || parseFloat(newInfraction.weightStart), parseFloat(newInfraction.weightCurrent)).toFixed(2)}€</div>
+                          </div>
+                        )}
                       </div>
-                      {newInfraction.ruleId === "__weight__" && (
-                        <>
-                          <div>
-                            <label style={C.label}>Poids début saison (kg)</label>
-                            {(() => { const wd = WEIGHT_INFRACTIONS.find(w => w.player === newInfraction.player); return wd ? (<div style={{padding:"10px",background:"#e3f2fd",borderRadius:8,fontWeight:700,color:"#1565c0",fontSize:14}}>{wd.startWeight} kg (auto)</div>) : (<input type="number" inputMode="decimal" value={newInfraction.weightStart||""} onChange={e=>setNewInfraction(p=>({...p,weightStart:e.target.value}))} placeholder="ex: 80.0" style={C.input}/>); })()}
-                          </div>
-                          <div>
-                            <label style={C.label}>Poids actuel (kg)</label>
-                            <input type="number" inputMode="decimal" value={newInfraction.weightCurrent||""} onChange={e=>setNewInfraction(p=>({...p,weightCurrent:e.target.value}))} placeholder="ex: 82.5" style={C.input}/>
-                          </div>
-                          {newInfraction.weightCurrent && (
-                            <div style={{display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",background:"#fff3e0",borderRadius:8,padding:12}}>
-                              <div style={{fontSize:11,fontWeight:700,color:"#e65100",textTransform:"uppercase"}}>Amende calculée</div>
-                              <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:28,color:"#e65100"}}>{calcWeightAmount(WEIGHT_INFRACTIONS.find(w=>w.player===newInfraction.player)?.startWeight || parseFloat(newInfraction.weightStart), parseFloat(newInfraction.weightCurrent)).toFixed(2)}€</div>
-                            </div>
-                          )}
-                        </>
-                      )}
-                      {!newInfraction.ruleId && <>
-                        <div>
-                          <label style={C.label}>Détail</label>
-                          <input value={newInfraction.customDetail} onChange={e=>setNewInfraction(p=>({...p,customDetail:e.target.value}))} placeholder="Description" style={C.input}/>
-                        </div>
-                        <div>
-                          <label style={C.label}>Montant (€)</label>
-                          <input type="number" inputMode="decimal" value={newInfraction.customAmount} onChange={e=>setNewInfraction(p=>({...p,customAmount:e.target.value}))} placeholder="0" style={C.input}/>
-                        </div>
-                      </>}
+                    )}
+
+                    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:12}}>
+                      <div>
+                        <label style={C.label}>+ Détail personnalisé (optionnel)</label>
+                        <input value={newInfraction.customDetail} onChange={e=>setNewInfraction(p=>({...p,customDetail:e.target.value}))} placeholder="Description" style={C.input}/>
+                      </div>
+                      <div>
+                        <label style={C.label}>Montant (€)</label>
+                        <input type="number" inputMode="decimal" value={newInfraction.customAmount} onChange={e=>setNewInfraction(p=>({...p,customAmount:e.target.value}))} placeholder="0" style={C.input}/>
+                      </div>
                     </div>
+
                     <div style={{display:"flex",gap:10,marginTop:14}}>
-                      <button onClick={addInfraction} style={{background:"#1565c0",color:"white",border:"none",padding:"10px 22px",borderRadius:8,cursor:"pointer",fontWeight:800}}>Ajouter</button>
-                      <button onClick={()=>setShowAddInfraction(false)} style={{background:"#eceff1",color:"#546e7a",border:"none",padding:"10px 18px",borderRadius:8,cursor:"pointer",fontWeight:700}}>Annuler</button>
+                      <button onClick={addInfraction} style={{background:"#1565c0",color:"white",border:"none",padding:"10px 22px",borderRadius:8,cursor:"pointer",fontWeight:800}}>Valider pour ce joueur</button>
+                      <button onClick={()=>{setShowAddInfraction(false);setNewInfraction(p=>({...p,player:"",checkedRules:{},useWeight:false,customDetail:"",customAmount:""}));}} style={{background:"#eceff1",color:"#546e7a",border:"none",padding:"10px 18px",borderRadius:8,cursor:"pointer",fontWeight:700}}>Fermer</button>
                     </div>
+                    <div style={{fontSize:11,color:"#90a4ae",marginTop:8}}>💡 Le match reste sélectionné : choisis simplement le joueur suivant pour enchaîner.</div>
                   </div>
                 )}
 
