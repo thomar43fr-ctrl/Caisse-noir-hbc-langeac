@@ -53,10 +53,12 @@ function getPlayerInfractionStats(entries) {
 }
 
 const NAV_ITEMS = ["Dashboard","Paiements","Joueurs","Règles","Calendrier","Stats"];
-
-// Renseigne ici les pesées de chaque joueur : { player, startWeight, midWeight, endWeight }
-// endWeight est optionnel tant que la pesée de fin de saison n'a pas eu lieu.
-const WEIGHT_INFRACTIONS = [];
+const HORS_MATCH_LABEL = "Hors match";
+const WEIGHT_PERIODS = [
+  { key: "avant", label: "Avant saison (référence)" },
+  { key: "mi", label: "Mi-saison" },
+  { key: "fin", label: "Fin de saison" },
+];
 
 export default function App() {
   const [rules, setRules] = useState(INITIAL_RULES);
@@ -64,6 +66,7 @@ export default function App() {
   const [calendar, setCalendar] = useState(INITIAL_CALENDAR);
   const [payments, setPayments] = useState(INITIAL_PAYMENTS);
   const [playersList, setPlayersList] = useState([]);
+  const [weights, setWeights] = useState([]);
 
   const [activeTab, setActiveTab] = useState("Dashboard");
   const [selectedPlayer, setSelectedPlayer] = useState(null);
@@ -75,7 +78,7 @@ export default function App() {
   const [showAddPlayer, setShowAddPlayer] = useState(false);
   const [newPlayerName, setNewPlayerName] = useState("");
   const [editingPlayerName, setEditingPlayerName] = useState(null);
-  const [newInfraction, setNewInfraction] = useState({player:"",calMatchId:"",checkedRules:{},useWeight:false,customDetail:"",customAmount:"",weightStart:"",weightCurrent:""});
+  const [newInfraction, setNewInfraction] = useState({player:"",calMatchId:"",checkedRules:{},useWeight:false,weightPeriod:"avant",customDetail:"",customAmount:"",weightStart:"",weightCurrent:""});
   const [newCalMatch, setNewCalMatch] = useState({date:"",opponent:"",home:true,location:"",team:"Éq1"});
   const [editingMatchResult, setEditingMatchResult] = useState(null);
   const [editingPayment, setEditingPayment] = useState(null);
@@ -112,13 +115,14 @@ export default function App() {
     if (!user && !guestMode) { setLoading(false); return; }
     setLoading(true);
     let loaded = 0;
-    const checkDone = () => { loaded++; if (loaded >= 5) setLoading(false); };
+    const checkDone = () => { loaded++; if (loaded >= 6) setLoading(false); };
     const unsubRules = onSnapshot(collection(db, "rules"), snap => { if (!snap.empty) setRules(snap.docs.map(d => ({...d.data(), id: d.id}))); checkDone(); });
     const unsubMatches = onSnapshot(collection(db, "matches"), snap => { if (!snap.empty) { const fbMatches = snap.docs.map(d => ({...d.data(), fbId: d.id})); setMatches(fbMatches.sort((a,b) => (a.sortKey||0)-(b.sortKey||0))); } checkDone(); });
     const unsubPayments = onSnapshot(collection(db, "payments"), snap => { if (!snap.empty) setPayments(snap.docs.map(d => ({...d.data(), fbId: d.id}))); checkDone(); });
     const unsubCal = onSnapshot(collection(db, "calendar"), snap => { if (!snap.empty) setCalendar(snap.docs.map(d => ({...d.data(), fbId: d.id}))); checkDone(); });
     const unsubPlayers = onSnapshot(collection(db, "playersList"), snap => { setPlayersList(snap.docs.map(d => ({...d.data(), id: d.id}))); checkDone(); });
-    return () => { unsubRules(); unsubMatches(); unsubPayments(); unsubCal(); unsubPlayers(); };
+    const unsubWeights = onSnapshot(collection(db, "weights"), snap => { setWeights(snap.docs.map(d => ({...d.data(), fbId: d.id}))); checkDone(); });
+    return () => { unsubRules(); unsubMatches(); unsubPayments(); unsubCal(); unsubPlayers(); unsubWeights(); };
   }, [user, guestMode]);
 
   useEffect(() => {
@@ -184,8 +188,12 @@ export default function App() {
   }, [playerStats, isAdmin]);
 
   const totalCaisse = useMemo(() => payments.reduce((s,p) => s+p.total, 0), [payments]);
-  const matchTotals = useMemo(() => matches.map(m => ({...m, total: (m.entries||[]).reduce((s,e) => s+e.amount, 0)})), [matches]);
-  const topOffenders = useMemo(() => Object.entries(playerStats).sort((a,b) => b[1].total-a[1].total).slice(0,5), [playerStats]);
+  // Les matchs "Hors match" (infractions ajoutées sans match lié) ne doivent jamais
+  // apparaître dans les classements / listes de matchs : on les exclut ici, une fois pour toutes.
+  const matchTotals = useMemo(() => matches
+    .filter(m => m.match !== HORS_MATCH_LABEL)
+    .map(m => ({...m, total: (m.entries||[]).reduce((s,e) => s+e.amount, 0)})), [matches]);
+  const topOffenders = useMemo(() => Object.entries(playerStats).filter(([,s]) => s.total > 0).sort((a,b) => b[1].total-a[1].total).slice(0,5), [playerStats]);
   const topChaboula = useMemo(() => Object.entries(playerStats).sort((a,b) => b[1].chaboula-a[1].chaboula).slice(0,5), [playerStats]);
 
   // Retrouve le document "matches" lié à un match du calendrier (même id)
@@ -233,6 +241,12 @@ export default function App() {
       batch.delete(doc(db, "payments", fbId||oldName));
       batch.set(doc(db, "payments", trimmed), {...payData, player: trimmed});
     }
+    const wd = weights.find(w => w.player === oldName);
+    if (wd) {
+      const {fbId, ...wdData} = wd;
+      batch.delete(doc(db, "weights", fbId||oldName));
+      batch.set(doc(db, "weights", trimmed), {...wdData, player: trimmed});
+    }
     batch.delete(doc(db, "playersList", oldName));
     batch.set(doc(db, "playersList", trimmed), {name: trimmed, hidden: false, createdAt: Date.now()});
     await batch.commit();
@@ -243,22 +257,47 @@ export default function App() {
   const toggleRule = (id) => setNewInfraction(p => ({...p, checkedRules: {...p.checkedRules, [id]: !p.checkedRules[id]}}));
 
   const addInfraction = async () => {
-    const { player, calMatchId, checkedRules, useWeight, weightStart, weightCurrent, customDetail, customAmount } = newInfraction;
+    const { player, calMatchId, checkedRules, useWeight, weightPeriod, weightStart, weightCurrent, customDetail, customAmount } = newInfraction;
     if (!player) { showToast("Choisis un joueur"); return; }
     const entries = [];
     rules.forEach(r => { if (checkedRules[r.id]) entries.push({player, amount:r.amount, detail:r.name}); });
+
+    let weightHandled = false;
     if (useWeight) {
-      const wd = WEIGHT_INFRACTIONS.find(w => w.player === player);
-      const startW = wd ? wd.startWeight : parseFloat(weightStart)||0;
-      const currentW = parseFloat(weightCurrent)||0;
+      const wd = weights.find(w => w.player === player) || {};
+      const currentW = parseFloat(weightCurrent) || 0;
       if (currentW) {
-        const amount = calcWeightAmount(startW, currentW);
-        const diffG = Math.round((currentW - startW) * 1000);
-        entries.push({player, amount, detail:`Différence poids: ${diffG >= 0 ? "+" : ""}${diffG}g (${startW}kg → ${currentW}kg)`});
+        weightHandled = true;
+        if (weightPeriod === "avant") {
+          // Pesée de référence : on enregistre le poids de début de saison, sans amende.
+          await setDoc(doc(db, "weights", player), {...wd, player, startWeight: currentW}, {merge: true});
+        } else if (weightPeriod === "mi") {
+          const baseW = wd.startWeight || parseFloat(weightStart) || 0;
+          if (baseW) {
+            const amount = calcWeightAmount(baseW, currentW);
+            const diffG = Math.round((currentW - baseW) * 1000);
+            entries.push({player, amount, detail:`Pesée mi-saison: ${diffG >= 0 ? "+" : ""}${diffG}g (${baseW}kg → ${currentW}kg)`});
+            await setDoc(doc(db, "weights", player), {...wd, player, startWeight: baseW, midWeight: currentW}, {merge: true});
+          }
+        } else if (weightPeriod === "fin") {
+          const baseW = wd.midWeight || wd.startWeight || parseFloat(weightStart) || 0;
+          if (baseW) {
+            const amount = calcWeightAmount(baseW, currentW);
+            const diffG = Math.round((currentW - baseW) * 1000);
+            entries.push({player, amount, detail:`Pesée fin de saison: ${diffG >= 0 ? "+" : ""}${diffG}g (${baseW}kg → ${currentW}kg)`});
+            await setDoc(doc(db, "weights", player), {...wd, player, endWeight: currentW}, {merge: true});
+          }
+        }
       }
     }
+
     if (customDetail && customAmount) entries.push({player, amount: parseFloat(customAmount)||0, detail: customDetail});
-    if (!entries.length) { showToast("Coche au moins une règle"); return; }
+    if (!entries.length && !weightHandled) { showToast("Coche au moins une règle"); return; }
+    if (!entries.length && weightHandled) {
+      setNewInfraction(prev => ({...prev, player:"", checkedRules:{}, useWeight:false, weightPeriod:"avant", weightStart:"", weightCurrent:"", customDetail:"", customAmount:""}));
+      showToast(`Poids de référence enregistré pour ${player} ✓`);
+      return;
+    }
 
     // Le match est lié au calendrier : on réutilise l'id du match du calendrier
     // comme id du document "matches", pour que les deux restent synchronisés.
@@ -270,14 +309,14 @@ export default function App() {
       matchDateFinal = calMatch ? calMatch.date : "";
       matchSortKeyFinal = calMatch ? (calMatch.sortKey||0) : 999;
     } else {
-      matchLabelFinal = "Hors match";
+      matchLabelFinal = HORS_MATCH_LABEL;
       matchDateFinal = new Date().toLocaleDateString("fr-FR",{month:"short",year:"numeric"});
       matchSortKeyFinal = 999;
     }
 
     const existing = calMatchId
       ? matches.find(m => (m.fbId||String(m.id)) === matchDocId)
-      : matches.find(m => m.match === "Hors match" && !m.calMatchId);
+      : matches.find(m => m.match === HORS_MATCH_LABEL && !m.calMatchId);
 
     if (existing) {
       await updateDoc(doc(db, "matches", existing.fbId||String(existing.id)), {entries: [...(existing.entries||[]), ...entries]});
@@ -291,7 +330,7 @@ export default function App() {
     if (p) await updateDoc(doc(db, "payments", p.fbId||player), {total: (playerStats[player]?.total||0) + totalAdded});
     else await setDoc(doc(db, "payments", player), {player, total: totalAdded, paid: 0});
 
-    setNewInfraction(prev => ({...prev, player:"", checkedRules:{}, useWeight:false, weightStart:"", weightCurrent:"", customDetail:"", customAmount:""}));
+    setNewInfraction(prev => ({...prev, player:"", checkedRules:{}, useWeight:false, weightPeriod:"avant", weightStart:"", weightCurrent:"", customDetail:"", customAmount:""}));
     showToast(`${entries.length} infraction(s) ajoutée(s) pour ${player} (${totalAdded.toFixed(2)}€) ✓`);
   };
 
@@ -346,6 +385,14 @@ export default function App() {
     if (!p) return;
     await updateDoc(doc(db, "payments", p.fbId||playerName), {paid: Math.min(p.paid + added, p.total)});
     setEditingPayment(null); setPaymentInput(""); showToast("Paiement enregistré ✓");
+  };
+
+  const resetPayment = async (playerName) => {
+    const p = payments.find(x => x.player === playerName);
+    if (!p) return;
+    if (typeof window !== "undefined" && !window.confirm(`Remettre à 0 le montant payé par ${playerName} ?`)) return;
+    await updateDoc(doc(db, "payments", p.fbId||playerName), {paid: 0});
+    showToast(`Paiement de ${playerName} remis à 0`);
   };
 
   const handleAuth = async () => {
@@ -551,7 +598,7 @@ export default function App() {
         {activeTab==="Dashboard" && (
           <div>
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:12,marginBottom:20}}>
-              {[{label:"Total caisse",value:`${totalCaisse.toFixed(1)}€`,color:"#1565c0",icon:"💰"},{label:"Matchs",value:matches.length,color:"#1976d2",icon:"🏆"},{label:"Joueurs",value:players.length,color:"#1e88e5",icon:"👥"},{label:"Record",value:`${Math.max(0,...matchTotals.map(m=>m.total))}€`,color:"#2196f3",icon:"🔥"}].map(card => (
+              {[{label:"Total caisse",value:`${totalCaisse.toFixed(1)}€`,color:"#1565c0",icon:"💰"},{label:"Matchs",value:matchTotals.length,color:"#1976d2",icon:"🏆"},{label:"Joueurs",value:players.length,color:"#1e88e5",icon:"👥"},{label:"Record",value:`${Math.max(0,...matchTotals.map(m=>m.total))}€`,color:"#2196f3",icon:"🔥"}].map(card => (
                 <div key={card.label} style={{...C.card,borderTop:`4px solid ${card.color}`,padding:16}}>
                   <div style={{fontSize:24}}>{card.icon}</div>
                   <div style={{fontSize:22,fontFamily:"'Bebas Neue',sans-serif",color:card.color}}>{card.value}</div>
@@ -638,7 +685,7 @@ export default function App() {
                       </div>
                     </div>
                     {isAdmin && (
-                      <div style={{display:"flex",justifyContent:"flex-end"}}>
+                      <div style={{display:"flex",justifyContent:"flex-end",gap:8}}>
                         {editingPayment===p.player ? (
                           <div style={{display:"flex",gap:6,alignItems:"center"}}>
                             <input type="number" value={paymentInput} onChange={e=>setPaymentInput(e.target.value)} placeholder="Montant €" inputMode="decimal" style={{width:100,padding:"8px 10px",borderRadius:8,border:"2px solid #1565c0",fontSize:14,fontFamily:"'Nunito',sans-serif"}}/>
@@ -648,6 +695,11 @@ export default function App() {
                         ) : (
                           <button onClick={()=>{setEditingPayment(p.player);setPaymentInput("");}} disabled={isPaid} style={{background:isPaid?"#e8f5e9":"#1565c0",color:isPaid?"#4caf50":"white",border:"none",padding:"8px 18px",borderRadius:8,cursor:isPaid?"default":"pointer",fontWeight:800,fontSize:13}}>
                             {isPaid?"✓ Soldé":"+ Enregistrer paiement"}
+                          </button>
+                        )}
+                        {p.paid > 0 && (
+                          <button onClick={()=>resetPayment(p.player)} title="Remettre le payé à 0" style={{background:"#fff3e0",color:"#e65100",border:"none",padding:"8px 12px",borderRadius:8,cursor:"pointer",fontWeight:800,fontSize:13}}>
+                            ↺ Reset
                           </button>
                         )}
                       </div>
@@ -763,24 +815,44 @@ export default function App() {
                       <input type="checkbox" checked={newInfraction.useWeight} onChange={()=>setNewInfraction(p=>({...p,useWeight:!p.useWeight}))}/>
                       <span style={{fontWeight:700,color:"#1a237e",fontSize:13}}>⚖️ Règle poids (0,50€/100g)</span>
                     </label>
-                    {newInfraction.useWeight && (
-                      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:12,marginBottom:14}}>
-                        <div>
-                          <label style={C.label}>Poids début saison (kg)</label>
-                          {(() => { const wd = WEIGHT_INFRACTIONS.find(w => w.player === newInfraction.player); return wd ? (<div style={{padding:"10px",background:"#e3f2fd",borderRadius:8,fontWeight:700,color:"#1565c0",fontSize:14}}>{wd.startWeight} kg (auto)</div>) : (<input type="number" inputMode="decimal" value={newInfraction.weightStart||""} onChange={e=>setNewInfraction(p=>({...p,weightStart:e.target.value}))} placeholder="ex: 80.0" style={C.input}/>); })()}
+                    {newInfraction.useWeight && (()=> {
+                      const wd = weights.find(w => w.player === newInfraction.player);
+                      const period = newInfraction.weightPeriod;
+                      const refWeight = period === "mi" ? wd?.startWeight : period === "fin" ? (wd?.midWeight || wd?.startWeight) : null;
+                      return (
+                      <div style={{marginBottom:14}}>
+                        <div style={{marginBottom:12}}>
+                          <label style={C.label}>Période de pesée</label>
+                          <select value={period} onChange={e=>setNewInfraction(p=>({...p,weightPeriod:e.target.value,weightStart:"",weightCurrent:""}))} style={C.input}>
+                            {WEIGHT_PERIODS.map(w => <option key={w.key} value={w.key}>{w.label}</option>)}
+                          </select>
                         </div>
-                        <div>
-                          <label style={C.label}>Poids actuel (kg)</label>
-                          <input type="number" inputMode="decimal" value={newInfraction.weightCurrent||""} onChange={e=>setNewInfraction(p=>({...p,weightCurrent:e.target.value}))} placeholder="ex: 82.5" style={C.input}/>
-                        </div>
-                        {newInfraction.weightCurrent && (
-                          <div style={{display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",background:"#fff3e0",borderRadius:8,padding:12}}>
-                            <div style={{fontSize:11,fontWeight:700,color:"#e65100",textTransform:"uppercase"}}>Amende calculée</div>
-                            <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:24,color:"#e65100"}}>{calcWeightAmount(WEIGHT_INFRACTIONS.find(w=>w.player===newInfraction.player)?.startWeight || parseFloat(newInfraction.weightStart), parseFloat(newInfraction.weightCurrent)).toFixed(2)}€</div>
+                        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:12}}>
+                          {period !== "avant" && (
+                            <div>
+                              <label style={C.label}>{period === "mi" ? "Poids début saison (kg)" : "Poids mi-saison (kg)"}</label>
+                              {refWeight ? (
+                                <div style={{padding:"10px",background:"#e3f2fd",borderRadius:8,fontWeight:700,color:"#1565c0",fontSize:14}}>{refWeight} kg (auto)</div>
+                              ) : (
+                                <input type="number" inputMode="decimal" value={newInfraction.weightStart||""} onChange={e=>setNewInfraction(p=>({...p,weightStart:e.target.value}))} placeholder="ex: 80.0" style={C.input}/>
+                              )}
+                            </div>
+                          )}
+                          <div>
+                            <label style={C.label}>{period === "avant" ? "Poids de référence (kg)" : period === "mi" ? "Poids mi-saison (kg)" : "Poids fin de saison (kg)"}</label>
+                            <input type="number" inputMode="decimal" value={newInfraction.weightCurrent||""} onChange={e=>setNewInfraction(p=>({...p,weightCurrent:e.target.value}))} placeholder="ex: 82.5" style={C.input}/>
                           </div>
-                        )}
+                          {period !== "avant" && newInfraction.weightCurrent && (
+                            <div style={{display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",background:"#fff3e0",borderRadius:8,padding:12}}>
+                              <div style={{fontSize:11,fontWeight:700,color:"#e65100",textTransform:"uppercase"}}>Amende calculée</div>
+                              <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:24,color:"#e65100"}}>{calcWeightAmount(refWeight || parseFloat(newInfraction.weightStart), parseFloat(newInfraction.weightCurrent)).toFixed(2)}€</div>
+                            </div>
+                          )}
+                        </div>
+                        {period === "avant" && <div style={{fontSize:11,color:"#90a4ae",marginTop:6}}>💡 Ce poids sera enregistré comme référence de début de saison — aucune amende n'est appliquée.</div>}
                       </div>
-                    )}
+                      );
+                    })()}
 
                     <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:12}}>
                       <div>
@@ -795,7 +867,7 @@ export default function App() {
 
                     <div style={{display:"flex",gap:10,marginTop:14}}>
                       <button onClick={addInfraction} style={{background:"#1565c0",color:"white",border:"none",padding:"10px 22px",borderRadius:8,cursor:"pointer",fontWeight:800}}>Valider pour ce joueur</button>
-                      <button onClick={()=>{setShowAddInfraction(false);setNewInfraction(p=>({...p,player:"",checkedRules:{},useWeight:false,customDetail:"",customAmount:""}));}} style={{background:"#eceff1",color:"#546e7a",border:"none",padding:"10px 18px",borderRadius:8,cursor:"pointer",fontWeight:700}}>Fermer</button>
+                      <button onClick={()=>{setShowAddInfraction(false);setNewInfraction(p=>({...p,player:"",checkedRules:{},useWeight:false,weightPeriod:"avant",customDetail:"",customAmount:""}));}} style={{background:"#eceff1",color:"#546e7a",border:"none",padding:"10px 18px",borderRadius:8,cursor:"pointer",fontWeight:700}}>Fermer</button>
                     </div>
                     <div style={{fontSize:11,color:"#90a4ae",marginTop:8}}>💡 Le match reste sélectionné : choisis simplement le joueur suivant pour enchaîner.</div>
                   </div>
@@ -848,7 +920,7 @@ export default function App() {
                 <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
                   <thead><tr style={{background:"#e3f2fd"}}>{["Joueur","Début saison","Mi-saison","Diff. (début→mi)","Amende","Fin de saison","Diff. (mi→fin)"].map(h=><th key={h} style={{padding:"8px 12px",textAlign:"left",fontFamily:"'Bebas Neue',sans-serif",fontSize:14,color:"#0d47a1",whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead>
                   <tbody>
-                    {WEIGHT_INFRACTIONS.filter(w=>w.startWeight&&w.midWeight).map((w,i) => {
+                    {weights.filter(w=>w.startWeight&&w.midWeight).map((w,i) => {
                       const diffG = Math.round((w.midWeight - w.startWeight) * 1000);
                       const amende = calcWeightAmount(w.startWeight, w.midWeight);
                       const isUp = diffG > 0; const isZero = diffG === 0;
@@ -867,6 +939,9 @@ export default function App() {
                         </tr>
                       );
                     })}
+                    {weights.filter(w=>w.startWeight&&w.midWeight).length === 0 && (
+                      <tr><td colSpan={7} style={{padding:"16px",textAlign:"center",color:"#90a4ae"}}>Aucune pesée mi-saison enregistrée pour l'instant</td></tr>
+                    )}
                   </tbody>
                 </table>
               </div>
@@ -949,7 +1024,7 @@ export default function App() {
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(280px,1fr))",gap:16}}>
               <div style={{...C.card,gridColumn:"1/-1"}}>
                 <h3 style={C.h3}>💰 Total par joueur</h3>
-                {Object.entries(playerStats).sort((a,b)=>b[1].total-a[1].total).map(([name,stats]) => {
+                {Object.entries(playerStats).filter(([,s])=>s.total>0).sort((a,b)=>b[1].total-a[1].total).map(([name,stats]) => {
                   const maxTotal = Math.max(1,...Object.values(playerStats).map(s=>s.total));
                   const pct = Math.round((stats.total/maxTotal)*100);
                   return (
@@ -975,7 +1050,7 @@ export default function App() {
               </div>
               <div style={C.card}>
                 <h3 style={C.h3}>🔥 Matchs par montant</h3>
-                {matchTotals.slice().sort((a,b)=>b.total-a.total).map((m,i) => (
+                {matchTotals.filter(m=>m.total>0).slice().sort((a,b)=>b.total-a.total).map((m,i) => (
                   <div key={m.fbId||m.id} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0",borderBottom:"1px solid #f0f0f0"}}>
                     <div style={{width:26,height:26,borderRadius:"50%",background:i===0?"#f4d03f":"#e3f2fd",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:900,fontSize:11,color:i===0?"#333":"#1565c0",flexShrink:0}}>{i+1}</div>
                     <div style={{flex:1,fontWeight:600,color:"#1a237e",fontSize:13}}>{m.match}</div>
