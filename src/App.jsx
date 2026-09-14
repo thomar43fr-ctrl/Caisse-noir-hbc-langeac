@@ -34,14 +34,18 @@ function getPlayerInfractionStats(entries) {
       {key:"sortie veille",label:"Sortie veille"},
       {key:"chaboula",label:"Chaboulat"},
       {key:"penalty raté",label:"Penalty raté"},
+      {key:"contre attaque raté",label:"Contre-attaque ratée"},
       {key:"contre-attaque ratée",label:"Contre-attaque ratée"},
       {key:"relance ratée",label:"Relance ratée"},
       {key:"tir fantaisie raté",label:"Tir fantaisie raté"},
+      {key:"tir fantaisie pris",label:"Tir fantaisie pris"},
       {key:"vomi",label:"Vomi en soirée"},
       {key:"retard",label:"Retard"},
       {key:"carton rouge",label:"Carton rouge"},
       {key:"défaite",label:"Défaite collective"},
       {key:"fantôme",label:"Fantôme"},
+      {key:"craquage mental",label:"Craquage mental"},
+      {key:"poule non officiel",label:"Poule non officiel"},
     ].forEach(({key,label}) => {
       if (d.includes(key)) counts[label] = (counts[label]||0)+1;
     });
@@ -55,6 +59,8 @@ const WEIGHT_PERIODS = [
   { key: "mi", label: "Mi-saison" },
   { key: "fin", label: "Fin de saison" },
 ];
+const QTY_OPTIONS = [1,2,3,4,5];
+
 export default function App() {
   const [rules, setRules] = useState(INITIAL_RULES);
   const [matches, setMatches] = useState(HISTORICAL_MATCHES);
@@ -72,12 +78,26 @@ export default function App() {
   const [showAddPlayer, setShowAddPlayer] = useState(false);
   const [newPlayerName, setNewPlayerName] = useState("");
   const [editingPlayerName, setEditingPlayerName] = useState(null);
-  const [newInfraction, setNewInfraction] = useState({player:"",calMatchId:"",checkedRules:{},useWeight:false,weightPeriod:"avant",customDetail:"",customAmount:"",weightStart:"",weightCurrent:""});
+  const [newInfraction, setNewInfraction] = useState({
+    mode: "player",
+    player: "",
+    calMatchId: "",
+    checkedRules: {},
+    checkedPlayers: {},
+    selectedRuleId: "",
+    useWeight: false,
+    weightPeriod: "avant",
+    customDetail: "",
+    customAmount: "",
+    weightStart: "",
+    weightCurrent: "",
+  });
   const [newCalMatch, setNewCalMatch] = useState({date:"",opponent:"",home:true,location:"",team:"Éq1"});
   const [editingMatchResult, setEditingMatchResult] = useState(null);
   const [editingPayment, setEditingPayment] = useState(null);
   const [paymentInput, setPaymentInput] = useState("");
   const [viewMatchDetail, setViewMatchDetail] = useState(null);
+  const [expandedPlayerInMatch, setExpandedPlayerInMatch] = useState(null);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState(null);
   const [user, setUser] = useState(null);
@@ -89,6 +109,7 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(false);
   const [guestMode, setGuestMode] = useState(false);
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(null), 2500); };
+
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
       setUser(u);
@@ -101,6 +122,7 @@ export default function App() {
     });
     return () => unsub();
   }, []);
+
   useEffect(() => {
     if (!user && !guestMode) { setLoading(false); return; }
     setLoading(true);
@@ -114,6 +136,7 @@ export default function App() {
     const unsubWeights = onSnapshot(collection(db, "weights"), snap => { setWeights(snap.docs.map(d => ({...d.data(), fbId: d.id}))); checkDone(); });
     return () => { unsubRules(); unsubMatches(); unsubPayments(); unsubCal(); unsubPlayers(); unsubWeights(); };
   }, [user, guestMode]);
+
   useEffect(() => {
     if (!isAdmin) return;
     const initIfEmpty = async () => {
@@ -144,7 +167,9 @@ export default function App() {
     };
     initIfEmpty();
   }, [isAdmin]);
+
   const allEntries = useMemo(() => matches.flatMap(m => (m.entries||[]).map((e,idx) => ({...e, matchLabel:m.match, matchDate:m.date, matchId: m.fbId||String(m.id), sortKey:m.sortKey||0, entryIndex:idx}))), [matches]);
+
   const playerStats = useMemo(() => {
     const stats = {};
     allEntries.forEach(e => {
@@ -157,11 +182,13 @@ export default function App() {
     });
     return stats;
   }, [allEntries]);
+
   const players = useMemo(() => {
     const fromStats = Object.keys(playerStats);
     const fromList = playersList.filter(p => !p.hidden).map(p => p.name);
     return Array.from(new Set([...fromStats, ...fromList])).sort();
   }, [playerStats, playersList]);
+
   useEffect(() => {
     if (!isAdmin || Object.keys(playerStats).length === 0 || payments.length === 0) return;
     payments.forEach(async p => {
@@ -171,22 +198,50 @@ export default function App() {
       }
     });
   }, [playerStats, isAdmin]);
+
   const totalCaisse = useMemo(() => payments.reduce((s,p) => s+p.total, 0), [payments]);
+
+  const goal = useMemo(() => {
+    let g = 3000;
+    while (totalCaisse > g) g += 500;
+    return g;
+  }, [totalCaisse]);
+  const goalPct = goal > 0 ? Math.min(100, Math.round((totalCaisse/goal)*100)) : 0;
+
   const matchTotals = useMemo(() => matches
     .filter(m => m.match !== HORS_MATCH_LABEL)
     .map(m => ({...m, total: (m.entries||[]).reduce((s,e) => s+e.amount, 0)})), [matches]);
   const topOffenders = useMemo(() => Object.entries(playerStats).filter(([,s]) => s.total > 0).sort((a,b) => b[1].total-a[1].total).slice(0,5), [playerStats]);
   const topChaboula = useMemo(() => Object.entries(playerStats).sort((a,b) => b[1].chaboula-a[1].chaboula).slice(0,5), [playerStats]);
+
+  const infractionLeaders = useMemo(() => {
+    const byType = {};
+    allEntries.forEach(e => {
+      if (!e.ruleId) return;
+      const rule = rules.find(r => String(r.id) === String(e.ruleId));
+      const label = rule ? rule.name : (e.detail||"").replace(/\s*\(x\d+\)$/,"");
+      if (!label) return;
+      if (!byType[label]) byType[label] = {};
+      byType[label][e.player] = (byType[label][e.player]||0) + (e.qty||1);
+    });
+    return Object.entries(byType).map(([label, playersMap]) => {
+      const top = Object.entries(playersMap).sort((a,b)=>b[1]-a[1])[0];
+      return top ? {label, player: top[0], count: top[1]} : null;
+    }).filter(Boolean).sort((a,b)=>b.count-a.count);
+  }, [allEntries, rules]);
+
   const getMatchDoc = (calMatch) => {
     if (!calMatch) return null;
     const calId = calMatch.fbId || String(calMatch.id);
     return matches.find(m => (m.fbId || String(m.id)) === calId);
   };
+
   const calcWeightAmount = (startWeight, currentWeight) => {
     if (!startWeight || !currentWeight) return 0;
     const diffG = Math.abs((parseFloat(currentWeight) - parseFloat(startWeight)) * 1000);
     return Math.floor(diffG / 100) * 0.5;
   };
+
   const addPlayer = async () => {
     if (!newPlayerName.trim()) return;
     const name = newPlayerName.trim();
@@ -195,12 +250,14 @@ export default function App() {
     setNewPlayerName(""); setShowAddPlayer(false);
     showToast(`${name} ajouté ✓`);
   };
+
   const hidePlayer = async (name) => {
     const p = playersList.find(x => x.name === name);
     if (p) await updateDoc(doc(db, "playersList", name), {hidden: true});
     else await setDoc(doc(db, "playersList", name), {name, hidden: true, createdAt: Date.now()});
     showToast(`${name} masqué`);
   };
+
   const renamePlayer = async () => {
     if (!editingPlayerName || !editingPlayerName.newName.trim()) return;
     const {old: oldName, newName} = editingPlayerName;
@@ -229,45 +286,24 @@ export default function App() {
     setEditingPlayerName(null);
     showToast(`${oldName} → ${trimmed} ✓`);
   };
-  const toggleRule = (id) => setNewInfraction(p => ({...p, checkedRules: {...p.checkedRules, [id]: !p.checkedRules[id]}}));
-  const addInfraction = async () => {
-    const { player, calMatchId, checkedRules, useWeight, weightPeriod, weightStart, weightCurrent, customDetail, customAmount } = newInfraction;
-    if (!player) { showToast("Choisis un joueur"); return; }
-    const entries = [];
-    rules.forEach(r => { if (checkedRules[r.id]) entries.push({player, amount:r.amount, detail:r.name}); });
-    let weightHandled = false;
-    if (useWeight) {
-      const wd = weights.find(w => w.player === player) || {};
-      const currentW = parseFloat(weightCurrent) || 0;
-      if (!currentW) { showToast("Saisis un poids valide"); return; }
-      if (weightPeriod === "avant") {
-        await setDoc(doc(db, "weights", player), {...wd, player, startWeight: currentW}, {merge: true});
-        weightHandled = true;
-      } else if (weightPeriod === "mi") {
-        const baseW = wd.startWeight || parseFloat(weightStart) || 0;
-        if (!baseW) { showToast("Renseigne d'abord un poids de début de saison"); return; }
-        const amount = calcWeightAmount(baseW, currentW);
-        const diffG = Math.round((currentW - baseW) * 1000);
-        entries.push({player, amount, detail:`Pesée mi-saison: ${diffG >= 0 ? "+" : ""}${diffG}g (${baseW}kg → ${currentW}kg)`});
-        await setDoc(doc(db, "weights", player), {...wd, player, startWeight: baseW, midWeight: currentW}, {merge: true});
-        weightHandled = true;
-      } else if (weightPeriod === "fin") {
-        const baseW = wd.midWeight || wd.startWeight || parseFloat(weightStart) || 0;
-        if (!baseW) { showToast("Renseigne d'abord un poids de référence"); return; }
-        const amount = calcWeightAmount(baseW, currentW);
-        const diffG = Math.round((currentW - baseW) * 1000);
-        entries.push({player, amount, detail:`Pesée fin de saison: ${diffG >= 0 ? "+" : ""}${diffG}g (${baseW}kg → ${currentW}kg)`});
-        await setDoc(doc(db, "weights", player), {...wd, player, endWeight: currentW}, {merge: true});
-        weightHandled = true;
-      }
-    }
-    if (customDetail && customAmount) entries.push({player, amount: parseFloat(customAmount)||0, detail: customDetail});
-    if (!entries.length && !weightHandled) { showToast("Coche au moins une règle ou saisis un poids valide"); return; }
-    if (!entries.length && weightHandled) {
-      setNewInfraction(prev => ({...prev, player:"", checkedRules:{}, useWeight:false, weightPeriod:"avant", weightStart:"", weightCurrent:"", customDetail:"", customAmount:""}));
-      showToast(`Poids de référence enregistré pour ${player} ✓`);
-      return;
-    }
+
+  const toggleRule = (id) => setNewInfraction(p => {
+    const cur = p.checkedRules[id];
+    const next = {...p.checkedRules};
+    if (cur) delete next[id]; else next[id] = 1;
+    return {...p, checkedRules: next};
+  });
+  const setRuleQty = (id, qty) => setNewInfraction(p => ({...p, checkedRules: {...p.checkedRules, [id]: Math.min(5,Math.max(1,qty))}}));
+
+  const togglePlayerForRule = (name) => setNewInfraction(p => {
+    const cur = p.checkedPlayers[name];
+    const next = {...p.checkedPlayers};
+    if (cur) delete next[name]; else next[name] = 1;
+    return {...p, checkedPlayers: next};
+  });
+  const setPlayerQty = (name, qty) => setNewInfraction(p => ({...p, checkedPlayers: {...p.checkedPlayers, [name]: Math.min(5,Math.max(1,qty))}}));
+
+  const applyEntriesToMatch = async (entries, calMatchId) => {
     let matchDocId, matchLabelFinal, matchDateFinal, matchSortKeyFinal;
     if (calMatchId) {
       const calMatch = calendar.find(c => (c.fbId||String(c.id)) === calMatchId);
@@ -290,13 +326,78 @@ export default function App() {
       const nm = {id: idToUse, match: matchLabelFinal, date: matchDateFinal, sortKey: matchSortKeyFinal, entries, ...(calMatchId ? {calMatchId} : {})};
       await setDoc(doc(db, "matches", String(idToUse)), nm);
     }
-    const totalAdded = entries.reduce((s,e)=>s+e.amount,0);
-    const p = payments.find(x => x.player === player);
-    if (p) await updateDoc(doc(db, "payments", p.fbId||player), {total: (playerStats[player]?.total||0) + totalAdded});
-    else await setDoc(doc(db, "payments", player), {player, total: totalAdded, paid: 0});
-    setNewInfraction(prev => ({...prev, player:"", checkedRules:{}, useWeight:false, weightPeriod:"avant", weightStart:"", weightCurrent:"", customDetail:"", customAmount:""}));
-    showToast(`${entries.length} infraction(s) ajoutée(s) pour ${player} (${totalAdded.toFixed(2)}€) ✓`);
   };
+
+  const addInfraction = async () => {
+    const { mode, player, calMatchId, checkedRules, checkedPlayers, selectedRuleId, useWeight, weightPeriod, weightStart, weightCurrent, customDetail, customAmount } = newInfraction;
+    let entries = [];
+
+    if (mode === "rule") {
+      const rule = rules.find(r => String(r.id) === String(selectedRuleId));
+      if (!rule) { showToast("Choisis une infraction"); return; }
+      const chosen = Object.entries(checkedPlayers||{});
+      if (!chosen.length) { showToast("Choisis au moins un joueur"); return; }
+      chosen.forEach(([p,qty]) => {
+        entries.push({player:p, amount: rule.amount*qty, detail: qty>1?`${rule.name} (x${qty})`:rule.name, ruleId: rule.id, qty});
+      });
+    } else {
+      if (!player) { showToast("Choisis un joueur"); return; }
+      Object.entries(checkedRules||{}).forEach(([rid,qty]) => {
+        const r = rules.find(x=>String(x.id)===String(rid));
+        if (r) entries.push({player, amount:r.amount*qty, detail: qty>1?`${r.name} (x${qty})`:r.name, ruleId:r.id, qty});
+      });
+
+      let weightHandled = false;
+      if (useWeight) {
+        const wd = weights.find(w => w.player === player) || {};
+        const currentW = parseFloat(weightCurrent) || 0;
+        if (!currentW) { showToast("Saisis un poids valide"); return; }
+        if (weightPeriod === "avant") {
+          await setDoc(doc(db, "weights", player), {...wd, player, startWeight: currentW}, {merge: true});
+          weightHandled = true;
+        } else if (weightPeriod === "mi") {
+          const baseW = wd.startWeight || parseFloat(weightStart) || 0;
+          if (!baseW) { showToast("Renseigne d'abord un poids de début de saison"); return; }
+          const amount = calcWeightAmount(baseW, currentW);
+          const diffG = Math.round((currentW - baseW) * 1000);
+          entries.push({player, amount, detail:`Pesée mi-saison: ${diffG >= 0 ? "+" : ""}${diffG}g (${baseW}kg → ${currentW}kg)`});
+          await setDoc(doc(db, "weights", player), {...wd, player, startWeight: baseW, midWeight: currentW}, {merge: true});
+          weightHandled = true;
+        } else if (weightPeriod === "fin") {
+          const baseW = wd.midWeight || wd.startWeight || parseFloat(weightStart) || 0;
+          if (!baseW) { showToast("Renseigne d'abord un poids de référence"); return; }
+          const amount = calcWeightAmount(baseW, currentW);
+          const diffG = Math.round((currentW - baseW) * 1000);
+          entries.push({player, amount, detail:`Pesée fin de saison: ${diffG >= 0 ? "+" : ""}${diffG}g (${baseW}kg → ${currentW}kg)`});
+          await setDoc(doc(db, "weights", player), {...wd, player, endWeight: currentW}, {merge: true});
+          weightHandled = true;
+        }
+      }
+      if (customDetail && customAmount) entries.push({player, amount: parseFloat(customAmount)||0, detail: customDetail});
+
+      if (!entries.length && weightHandled) {
+        setNewInfraction(prev => ({...prev, player:"", checkedRules:{}, useWeight:false, weightPeriod:"avant", weightStart:"", weightCurrent:"", customDetail:"", customAmount:""}));
+        showToast(`Poids de référence enregistré pour ${player} ✓`);
+        return;
+      }
+    }
+
+    if (!entries.length) { showToast("Ajoute au moins une infraction"); return; }
+
+    await applyEntriesToMatch(entries, calMatchId);
+
+    const byPlayer = {};
+    entries.forEach(e => { byPlayer[e.player] = (byPlayer[e.player]||0) + e.amount; });
+    for (const [pl, added] of Object.entries(byPlayer)) {
+      const p = payments.find(x => x.player === pl);
+      if (p) await updateDoc(doc(db, "payments", p.fbId||pl), {total: (playerStats[pl]?.total||0) + added});
+      else await setDoc(doc(db, "payments", pl), {player: pl, total: added, paid: 0});
+    }
+
+    setNewInfraction(prev => ({...prev, player:"", checkedRules:{}, checkedPlayers:{}, useWeight:false, weightPeriod:"avant", weightStart:"", weightCurrent:"", customDetail:"", customAmount:""}));
+    showToast(`${entries.length} infraction(s) ajoutée(s) (${entries.reduce((s,e)=>s+e.amount,0).toFixed(2)}€) ✓`);
+  };
+
   const deleteInfraction = async (matchId, entryIndex) => {
     const m = matches.find(x => x.fbId === matchId || String(x.id) === String(matchId));
     if (!m) return;
@@ -316,20 +417,46 @@ export default function App() {
     }
     showToast("Infraction supprimée");
   };
+
   const addRule = async () => {
     if (!newRule.name || !newRule.amount) return;
     const r = {id: Date.now(), name: newRule.name, amount: parseFloat(newRule.amount)};
     await setDoc(doc(db, "rules", String(r.id)), r);
     setNewRule({name:"",amount:""}); setShowAddRule(false); showToast("Règle ajoutée ✓");
   };
-  const saveRule = async () => { await updateDoc(doc(db, "rules", String(editingRule.id)), editingRule); setEditingRule(null); showToast("Règle modifiée ✓"); };
+
+  const saveRule = async () => {
+    await updateDoc(doc(db, "rules", String(editingRule.id)), editingRule);
+    const batch = writeBatch(db);
+    let touched = false;
+    matches.forEach(m => {
+      const entries = m.entries || [];
+      let changed = false;
+      const newEntries = entries.map(e => {
+        if (String(e.ruleId) === String(editingRule.id)) {
+          changed = true;
+          const qty = e.qty || 1;
+          const newAmount = editingRule.amount * qty;
+          const newDetail = qty > 1 ? `${editingRule.name} (x${qty})` : editingRule.name;
+          return {...e, amount: newAmount, detail: newDetail};
+        }
+        return e;
+      });
+      if (changed) { batch.update(doc(db, "matches", m.fbId||String(m.id)), {entries: newEntries}); touched = true; }
+    });
+    if (touched) await batch.commit();
+    setEditingRule(null);
+    showToast("Règle modifiée — infractions déjà enregistrées mises à jour ✓");
+  };
   const deleteRule = async (id) => { await deleteDoc(doc(db, "rules", String(id))); showToast("Règle supprimée"); };
+
   const addCalendarMatch = async () => {
     if (!newCalMatch.opponent || !newCalMatch.date) return;
     const m = {...newCalMatch, id: Date.now(), sortKey: 999, home: newCalMatch.home === true || newCalMatch.home === "true"};
     await setDoc(doc(db, "calendar", String(m.id)), m);
     setNewCalMatch({date:"",opponent:"",home:true,location:"",team:"Éq1"}); setShowAddCalendar(false); showToast("Match ajouté ✓");
   };
+
   const calendarEq1 = useMemo(() => sortCalendarEntries(calendar.filter(m => (m.team||"Éq1") === "Éq1")), [calendar]);
   const calendarEq2 = useMemo(() => sortCalendarEntries(calendar.filter(m => m.team === "Éq2")), [calendar]);
   const sortedCalendar = useMemo(() => sortCalendarEntries(calendar), [calendar]);
@@ -337,11 +464,13 @@ export default function App() {
   const getNextId = (list) => { const n = list.find(m => m._d && m._d >= today0); return n ? (n.fbId||String(n.id)) : null; };
   const nextMatchFbId1 = getNextId(calendarEq1);
   const nextMatchFbId2 = getNextId(calendarEq2);
+
   const saveMatchResult = async (m, result, score) => {
     await updateDoc(doc(db, "calendar", m.fbId || String(m.id)), {result, score});
     setEditingMatchResult(null);
     showToast("Résultat enregistré ✓");
   };
+
   const savePayment = async (playerName) => {
     const added = parseFloat(paymentInput) || 0;
     const p = payments.find(x => x.player === playerName);
@@ -349,6 +478,7 @@ export default function App() {
     await updateDoc(doc(db, "payments", p.fbId||playerName), {paid: Math.min(p.paid + added, p.total)});
     setEditingPayment(null); setPaymentInput(""); showToast("Paiement enregistré ✓");
   };
+
   const resetPayment = async (playerName) => {
     const p = payments.find(x => x.player === playerName);
     if (!p) return;
@@ -356,6 +486,7 @@ export default function App() {
     await updateDoc(doc(db, "payments", p.fbId||playerName), {paid: 0});
     showToast(`Paiement de ${playerName} remis à 0`);
   };
+
   const handleAuth = async () => {
     setAuthError(""); setAuthLoading(true);
     try {
@@ -368,19 +499,21 @@ export default function App() {
     }
     setAuthLoading(false);
   };
+
   const C = {
     card: {background:"white", borderRadius:16, padding:20, boxShadow:"0 2px 12px rgba(0,0,0,0.07)"},
     h3: {margin:"0 0 16px", color:"#0d47a1", fontFamily:"'Bebas Neue',sans-serif", fontSize:20, letterSpacing:1},
     input: {width:"100%",padding:"10px",borderRadius:8,border:"2px solid #e3f2fd",fontSize:14,boxSizing:"border-box",fontFamily:"'Nunito',sans-serif"},
     label: {fontSize:11,fontWeight:700,color:"#78909c",display:"block",marginBottom:4,textTransform:"uppercase"},
   };
+
   const renderCalCard = (m, nextId) => {
     const fbId = m.fbId || String(m.id);
     const isNext = fbId === nextId;
     const matchDoc = getMatchDoc(m);
     const matchTotal = matchDoc ? (matchDoc.entries||[]).reduce((s,e) => s+e.amount, 0) : 0;
     return (
-      <div key={fbId} onClick={()=>setViewMatchDetail(m)} style={{background:"white",borderRadius:14,padding:"12px 16px",boxShadow:isNext?"0 4px 16px rgba(21,101,192,0.25)":"0 2px 8px rgba(0,0,0,0.06)",borderLeft:`4px solid ${m.home?"#1565c0":"#42a5f5"}`,outline:isNext?"2px solid #1565c0":"none",cursor:"pointer"}}>
+      <div key={fbId} onClick={()=>{setViewMatchDetail(m); setExpandedPlayerInMatch(null);}} style={{background:"white",borderRadius:14,padding:"12px 16px",boxShadow:isNext?"0 4px 16px rgba(21,101,192,0.25)":"0 2px 8px rgba(0,0,0,0.06)",borderLeft:`4px solid ${m.home?"#1565c0":"#42a5f5"}`,outline:isNext?"2px solid #1565c0":"none",cursor:"pointer"}}>
         <div style={{display:"flex",alignItems:"center",gap:14}}>
           <div style={{width:38,height:38,borderRadius:"50%",background:m.team==="Éq2"?"#e3f2fd":"#1565c0",display:"flex",alignItems:"center",justifyContent:"center",color:m.team==="Éq2"?"#1565c0":"white",fontFamily:"'Bebas Neue',sans-serif",fontSize:12,flexShrink:0}}>{m.team}</div>
           <div style={{flex:1,minWidth:0}}>
@@ -421,12 +554,14 @@ export default function App() {
       </div>
     );
   };
+
   if (loading) return (
     <div style={{minHeight:"100vh",background:"#f0f6ff",display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:16}}>
       <div style={{width:80,height:80,borderRadius:"50%",background:"#1565c0",display:"flex",alignItems:"center",justifyContent:"center",color:"white",fontSize:36}}>🤾</div>
       <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:24,color:"#0d47a1",letterSpacing:2}}>Chargement...</div>
     </div>
   );
+
   if (!user && !guestMode) return (
     <div style={{minHeight:"100vh",background:"linear-gradient(135deg,#1565c0,#0d47a1)",display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
       <div style={{background:"white",borderRadius:20,padding:32,width:"100%",maxWidth:380,boxShadow:"0 20px 60px rgba(0,0,0,0.3)"}}>
@@ -455,9 +590,11 @@ export default function App() {
       </div>
     </div>
   );
+
   return (
     <div style={{minHeight:"100vh",background:"#f0f6ff",fontFamily:"'Nunito',sans-serif"}}>
       {toast && <div style={{position:"fixed",top:16,left:"50%",transform:"translateX(-50%)",background:"#1565c0",color:"white",padding:"10px 24px",borderRadius:30,fontWeight:800,fontSize:14,zIndex:9999,boxShadow:"0 4px 20px rgba(0,0,0,0.2)",whiteSpace:"nowrap"}}>{toast}</div>}
+
       {editingPlayerName && (
         <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
           <div style={{background:"white",borderRadius:20,padding:28,width:"100%",maxWidth:360,boxShadow:"0 20px 60px rgba(0,0,0,0.3)"}}>
@@ -473,13 +610,22 @@ export default function App() {
           </div>
         </div>
       )}
+
       {viewMatchDetail && (() => {
         const m = viewMatchDetail;
         const matchDoc = getMatchDoc(m);
         const entries = matchDoc ? (matchDoc.entries||[]) : [];
         const total = entries.reduce((s,e)=>s+e.amount,0);
+        const byPlayer = {};
+        entries.forEach(e => {
+          if (!byPlayer[e.player]) byPlayer[e.player] = {total:0, items:[]};
+          byPlayer[e.player].total += e.amount;
+          byPlayer[e.player].items.push(e);
+        });
+        const ranked = Object.entries(byPlayer).sort((a,b)=>b[1].total-a[1].total);
+        const closeModal = () => { setViewMatchDetail(null); setExpandedPlayerInMatch(null); };
         return (
-          <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",padding:16}} onClick={()=>setViewMatchDetail(null)}>
+          <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",padding:16}} onClick={closeModal}>
             <div style={{background:"white",borderRadius:20,padding:24,width:"100%",maxWidth:480,maxHeight:"85vh",overflowY:"auto",boxShadow:"0 20px 60px rgba(0,0,0,0.3)"}} onClick={e=>e.stopPropagation()}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:16,gap:10}}>
                 <div>
@@ -488,35 +634,49 @@ export default function App() {
                   <div style={{fontSize:12,color:"#78909c",marginTop:2}}>{m.date} • {m.location} • {m.home?"🏠 Domicile":"✈️ Extérieur"}</div>
                   {m.result && <div style={{marginTop:6,fontSize:12,fontWeight:800,color:m.result==="victoire"?"#2e7d32":m.result==="défaite"?"#c62828":"#616161"}}>{m.result.toUpperCase()} {m.score?`(${m.score})`:""}</div>}
                 </div>
-                <button onClick={()=>setViewMatchDetail(null)} style={{background:"#eceff1",color:"#546e7a",border:"none",width:30,height:30,borderRadius:8,cursor:"pointer",fontSize:14,flexShrink:0}}>✕</button>
+                <button onClick={closeModal} style={{background:"#eceff1",color:"#546e7a",border:"none",width:30,height:30,borderRadius:8,cursor:"pointer",fontSize:14,flexShrink:0}}>✕</button>
               </div>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,padding:"10px 14px",background:"#f0f6ff",borderRadius:10}}>
                 <span style={{fontWeight:700,color:"#1a237e",fontSize:13}}>Total amendes</span>
                 <span style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:22,color:"#1565c0"}}>{total}€</span>
               </div>
-              {entries.length === 0 ? (
+              <div style={{fontSize:11,fontWeight:800,color:"#78909c",textTransform:"uppercase",letterSpacing:1,marginBottom:8}}>Classement des pires payeurs — ce match</div>
+              {ranked.length === 0 ? (
                 <div style={{color:"#90a4ae",padding:20,textAlign:"center"}}>Aucune infraction enregistrée pour ce match</div>
-              ) : (
-                entries.map((e,i) => (
-                  <div key={i} style={{display:"flex",alignItems:"center",padding:"8px 12px",background:"#f8fbff",borderRadius:8,marginBottom:6,borderLeft:`3px solid ${e.amount>10?"#e53935":e.amount>5?"#fb8c00":"#1565c0"}`}}>
-                    <div style={{flex:1,minWidth:0}}>
-                      <div style={{fontWeight:800,color:"#0d47a1",fontSize:13}}>{e.player}</div>
-                      <div style={{fontSize:12,color:"#546e7a"}}>{e.detail}</div>
+              ) : ranked.map(([playerName, data], i) => {
+                const isExpanded = expandedPlayerInMatch === playerName;
+                return (
+                  <div key={playerName} style={{marginBottom:8}}>
+                    <div onClick={()=>setExpandedPlayerInMatch(isExpanded?null:playerName)} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 12px",background:"#f8fbff",borderRadius:10,cursor:"pointer",borderLeft:`4px solid ${i===0?"#e53935":"#1565c0"}`}}>
+                      <div style={{width:26,height:26,borderRadius:"50%",background:i===0?"#f4d03f":"#e3f2fd",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:900,fontSize:12,color:i===0?"#333":"#1565c0",flexShrink:0}}>{i+1}</div>
+                      <div style={{flex:1,fontWeight:800,color:"#1a237e",fontSize:13}}>{playerName}</div>
+                      <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:18,color:"#1565c0"}}>{data.total}€</div>
+                      <div style={{color:"#90a4ae",fontSize:11}}>{isExpanded?"▲":"▼"}</div>
                     </div>
-                    <div style={{display:"flex",alignItems:"center",gap:8,flexShrink:0}}>
-                      <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:17,color:e.amount>10?"#e53935":e.amount>5?"#fb8c00":"#1565c0"}}>{e.amount}€</div>
-                      {isAdmin && matchDoc && <button onClick={()=>deleteInfraction(matchDoc.fbId||String(matchDoc.id), i)} style={{background:"#ffebee",color:"#e53935",border:"none",width:24,height:24,borderRadius:6,cursor:"pointer",fontSize:11}}>🗑</button>}
-                    </div>
+                    {isExpanded && (
+                      <div style={{marginTop:4,paddingLeft:8}}>
+                        {data.items.map((e,j) => (
+                          <div key={j} style={{display:"flex",alignItems:"center",padding:"6px 10px",background:"white",borderRadius:8,marginBottom:4,border:"1px solid #f0f0f0"}}>
+                            <div style={{fontSize:12,color:"#546e7a",flex:1}}>{e.detail}</div>
+                            <div style={{display:"flex",alignItems:"center",gap:8,flexShrink:0}}>
+                              <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:14,color:"#1565c0"}}>{e.amount}€</div>
+                              {isAdmin && matchDoc && <button onClick={()=>deleteInfraction(matchDoc.fbId||String(matchDoc.id), entries.indexOf(e))} style={{background:"#ffebee",color:"#e53935",border:"none",width:22,height:22,borderRadius:6,cursor:"pointer",fontSize:10}}>🗑</button>}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                ))
-              )}
+                );
+              })}
               {isAdmin && (
-                <button onClick={()=>{ setNewInfraction(p=>({...p, calMatchId: m.fbId||String(m.id)})); setActiveTab("Joueurs"); setShowAddInfraction(true); setViewMatchDetail(null); }} style={{marginTop:14,width:"100%",background:"#1565c0",color:"white",border:"none",padding:"10px",borderRadius:10,cursor:"pointer",fontWeight:800,fontSize:13}}>+ Ajouter une infraction pour ce match</button>
+                <button onClick={()=>{ setNewInfraction(p=>({...p, mode:"player", calMatchId: m.fbId||String(m.id)})); setActiveTab("Joueurs"); setShowAddInfraction(true); closeModal(); }} style={{marginTop:14,width:"100%",background:"#1565c0",color:"white",border:"none",padding:"10px",borderRadius:10,cursor:"pointer",fontWeight:800,fontSize:13}}>+ Ajouter une infraction pour ce match</button>
               )}
             </div>
           </div>
         );
       })()}
+
       <div style={{background:"linear-gradient(135deg,#1565c0 0%,#0d47a1 100%)",boxShadow:"0 4px 20px rgba(13,71,161,0.3)",position:"sticky",top:0,zIndex:100}}>
         <div style={{maxWidth:1200,margin:"0 auto",padding:"10px 16px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:8}}>
           <div style={{display:"flex",alignItems:"center",gap:12}}>
@@ -531,6 +691,13 @@ export default function App() {
               <div style={{color:"#90caf9",fontSize:9,fontWeight:700,textTransform:"uppercase",letterSpacing:1}}>Total</div>
               <div style={{color:"white",fontSize:22,fontFamily:"'Bebas Neue',sans-serif"}}>{totalCaisse.toFixed(1)}€</div>
             </div>
+            <div style={{background:"rgba(255,255,255,0.15)",borderRadius:12,padding:"6px 12px",textAlign:"center",minWidth:92}}>
+              <div style={{color:"#90caf9",fontSize:9,fontWeight:700,textTransform:"uppercase",letterSpacing:1}}>Objectif {goal}€</div>
+              <div style={{width:"100%",height:6,background:"rgba(255,255,255,0.25)",borderRadius:3,marginTop:4}}>
+                <div style={{width:`${goalPct}%`,height:"100%",background:"#ffca28",borderRadius:3}}/>
+              </div>
+              <div style={{color:"white",fontSize:11,fontWeight:800,marginTop:2}}>{goalPct}%</div>
+            </div>
             <button onClick={()=>{ if(user) signOut(auth); setGuestMode(false); }} style={{background:"rgba(255,255,255,0.15)",border:"none",borderRadius:10,padding:"8px 10px",color:"white",cursor:"pointer",fontSize:11,fontWeight:700,lineHeight:1.4}}>
               {isAdmin?"👑":guestMode?"👁️":"👤"}<br/>Déco
             </button>
@@ -544,7 +711,9 @@ export default function App() {
           </div>
         </div>
       </div>
+
       <div style={{maxWidth:1200,margin:"0 auto",padding:"16px 12px"}}>
+
         {activeTab==="Dashboard" && (
           <div>
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:12,marginBottom:20}}>
@@ -592,6 +761,7 @@ export default function App() {
             </div>
           </div>
         )}
+
         {activeTab==="Paiements" && (
           <div>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16,flexWrap:"wrap",gap:10}}>
@@ -659,6 +829,7 @@ export default function App() {
             </div>
           </div>
         )}
+
         {activeTab==="Joueurs" && (
           <div>
             {selectedPlayer ? (
@@ -713,6 +884,7 @@ export default function App() {
                     </div>
                   )}
                 </div>
+
                 {isAdmin && showAddPlayer && (
                   <div style={{...C.card,marginBottom:16}}>
                     <h3 style={C.h3}>➕ Ajouter un joueur</h3>
@@ -723,17 +895,37 @@ export default function App() {
                     </div>
                   </div>
                 )}
+
                 {isAdmin && showAddInfraction && (
                   <div style={{...C.card,marginBottom:16}}>
                     <h3 style={C.h3}>Ajouter des infractions</h3>
+
+                    <div style={{display:"flex",background:"#f0f6ff",borderRadius:10,padding:4,marginBottom:14,maxWidth:320}}>
+                      {[{k:"player",l:"Par joueur"},{k:"rule",l:"Par infraction"}].map(({k,l}) => (
+                        <button key={k} onClick={()=>setNewInfraction(p=>({...p,mode:k,checkedRules:{},checkedPlayers:{},selectedRuleId:"",player:""}))}
+                          style={{flex:1,padding:"8px 0",borderRadius:8,border:"none",cursor:"pointer",fontWeight:800,fontSize:12,background:newInfraction.mode===k?"#1565c0":"transparent",color:newInfraction.mode===k?"white":"#78909c"}}>{l}</button>
+                      ))}
+                    </div>
+
                     <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:12,marginBottom:14}}>
-                      <div>
-                        <label style={C.label}>Joueur</label>
-                        <select value={newInfraction.player} onChange={e=>setNewInfraction(p=>({...p,player:e.target.value}))} style={C.input}>
-                          <option value="">Choisir</option>
-                          {players.map(p=><option key={p}>{p}</option>)}
-                        </select>
-                      </div>
+                      {newInfraction.mode === "player" && (
+                        <div>
+                          <label style={C.label}>Joueur</label>
+                          <select value={newInfraction.player} onChange={e=>setNewInfraction(p=>({...p,player:e.target.value}))} style={C.input}>
+                            <option value="">Choisir</option>
+                            {players.map(p=><option key={p}>{p}</option>)}
+                          </select>
+                        </div>
+                      )}
+                      {newInfraction.mode === "rule" && (
+                        <div>
+                          <label style={C.label}>Infraction</label>
+                          <select value={newInfraction.selectedRuleId} onChange={e=>setNewInfraction(p=>({...p,selectedRuleId:e.target.value}))} style={C.input}>
+                            <option value="">Choisir</option>
+                            {rules.map(r=><option key={r.id} value={r.id}>{r.name} ({r.amount}€)</option>)}
+                          </select>
+                        </div>
+                      )}
                       <div>
                         <label style={C.label}>Match (calendrier)</label>
                         <select value={newInfraction.calMatchId} onChange={e=>setNewInfraction(p=>({...p,calMatchId:e.target.value}))} style={C.input}>
@@ -745,75 +937,119 @@ export default function App() {
                         {!sortedCalendar.length && <div style={{fontSize:11,color:"#90a4ae",marginTop:4}}>Aucun match au calendrier pour l'instant — ajoute-le dans l'onglet Calendrier.</div>}
                       </div>
                     </div>
-                    <label style={C.label}>Règles (coche tout ce qui s'applique)</label>
-                    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(220px,1fr))",gap:6,marginBottom:14,maxHeight:260,overflowY:"auto",padding:"8px",background:"#f8fbff",borderRadius:8}}>
-                      {rules.map(r => (
-                        <label key={r.id} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 8px",borderRadius:6,cursor:"pointer",background:newInfraction.checkedRules[r.id]?"#e3f2fd":"transparent"}}>
-                          <input type="checkbox" checked={!!newInfraction.checkedRules[r.id]} onChange={()=>toggleRule(r.id)}/>
-                          <span style={{fontSize:13,color:"#1a237e",flex:1}}>{r.name}</span>
-                          <span style={{fontSize:12,fontWeight:800,color:"#1565c0"}}>{r.amount}€</span>
-                        </label>
-                      ))}
-                    </div>
-                    <label style={{display:"flex",alignItems:"center",gap:8,marginBottom:10,cursor:"pointer"}}>
-                      <input type="checkbox" checked={newInfraction.useWeight} onChange={()=>setNewInfraction(p=>({...p,useWeight:!p.useWeight}))}/>
-                      <span style={{fontWeight:700,color:"#1a237e",fontSize:13}}>⚖️ Règle poids (0,50€/100g)</span>
-                    </label>
-                    {newInfraction.useWeight && (()=> {
-                      const wd = weights.find(w => w.player === newInfraction.player);
-                      const period = newInfraction.weightPeriod;
-                      const refWeight = period === "mi" ? wd?.startWeight : period === "fin" ? (wd?.midWeight || wd?.startWeight) : null;
-                      return (
-                      <div style={{marginBottom:14}}>
-                        <div style={{marginBottom:12}}>
-                          <label style={C.label}>Période de pesée</label>
-                          <select value={period} onChange={e=>setNewInfraction(p=>({...p,weightPeriod:e.target.value,weightStart:"",weightCurrent:""}))} style={C.input}>
-                            {WEIGHT_PERIODS.map(w => <option key={w.key} value={w.key}>{w.label}</option>)}
-                          </select>
+
+                    {newInfraction.mode === "player" && (
+                      <>
+                        <label style={C.label}>Règles (coche + choisis le nombre de fois, 1 à 5)</label>
+                        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(240px,1fr))",gap:6,marginBottom:14,maxHeight:280,overflowY:"auto",padding:"8px",background:"#f8fbff",borderRadius:8}}>
+                          {rules.map(r => {
+                            const qty = newInfraction.checkedRules[r.id];
+                            return (
+                              <div key={r.id} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 8px",borderRadius:6,background:qty?"#e3f2fd":"transparent"}}>
+                                <input type="checkbox" checked={!!qty} onChange={()=>toggleRule(r.id)}/>
+                                <span onClick={()=>toggleRule(r.id)} style={{fontSize:13,color:"#1a237e",flex:1,cursor:"pointer"}}>{r.name}</span>
+                                <span style={{fontSize:12,fontWeight:800,color:"#1565c0"}}>{r.amount}€</span>
+                                {qty ? (
+                                  <select value={qty} onChange={e=>setRuleQty(r.id, parseInt(e.target.value))} style={{padding:"3px 6px",borderRadius:6,border:"1px solid #90caf9",fontSize:12}}>
+                                    {QTY_OPTIONS.map(n=><option key={n} value={n}>×{n}</option>)}
+                                  </select>
+                                ) : null}
+                              </div>
+                            );
+                          })}
                         </div>
-                        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:12}}>
-                          {period !== "avant" && (
-                            <div>
-                              <label style={C.label}>{period === "mi" ? "Poids début saison (kg)" : "Poids mi-saison (kg)"}</label>
-                              {refWeight ? (
-                                <div style={{padding:"10px",background:"#e3f2fd",borderRadius:8,fontWeight:700,color:"#1565c0",fontSize:14}}>{refWeight} kg (auto)</div>
-                              ) : (
-                                <input type="number" inputMode="decimal" value={newInfraction.weightStart||""} onChange={e=>setNewInfraction(p=>({...p,weightStart:e.target.value}))} placeholder="ex: 80.0" style={C.input}/>
+                      </>
+                    )}
+
+                    {newInfraction.mode === "rule" && (
+                      <>
+                        <label style={C.label}>Joueurs concernés (coche + nombre de fois, 1 à 5)</label>
+                        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(200px,1fr))",gap:6,marginBottom:14,maxHeight:280,overflowY:"auto",padding:"8px",background:"#f8fbff",borderRadius:8}}>
+                          {players.map(p => {
+                            const qty = newInfraction.checkedPlayers[p];
+                            return (
+                              <div key={p} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 8px",borderRadius:6,background:qty?"#e3f2fd":"transparent"}}>
+                                <input type="checkbox" checked={!!qty} onChange={()=>togglePlayerForRule(p)}/>
+                                <span onClick={()=>togglePlayerForRule(p)} style={{fontSize:13,color:"#1a237e",flex:1,cursor:"pointer"}}>{p}</span>
+                                {qty ? (
+                                  <select value={qty} onChange={e=>setPlayerQty(p, parseInt(e.target.value))} style={{padding:"3px 6px",borderRadius:6,border:"1px solid #90caf9",fontSize:12}}>
+                                    {QTY_OPTIONS.map(n=><option key={n} value={n}>×{n}</option>)}
+                                  </select>
+                                ) : null}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </>
+                    )}
+
+                    {newInfraction.mode === "player" && (
+                      <>
+                        <label style={{display:"flex",alignItems:"center",gap:8,marginBottom:10,cursor:"pointer"}}>
+                          <input type="checkbox" checked={newInfraction.useWeight} onChange={()=>setNewInfraction(p=>({...p,useWeight:!p.useWeight}))}/>
+                          <span style={{fontWeight:700,color:"#1a237e",fontSize:13}}>⚖️ Règle poids (0,50€/100g)</span>
+                        </label>
+                        {newInfraction.useWeight && (()=> {
+                          const wd = weights.find(w => w.player === newInfraction.player);
+                          const period = newInfraction.weightPeriod;
+                          const refWeight = period === "mi" ? wd?.startWeight : period === "fin" ? (wd?.midWeight || wd?.startWeight) : null;
+                          return (
+                          <div style={{marginBottom:14}}>
+                            <div style={{marginBottom:12}}>
+                              <label style={C.label}>Période de pesée</label>
+                              <select value={period} onChange={e=>setNewInfraction(p=>({...p,weightPeriod:e.target.value,weightStart:"",weightCurrent:""}))} style={C.input}>
+                                {WEIGHT_PERIODS.map(w => <option key={w.key} value={w.key}>{w.label}</option>)}
+                              </select>
+                            </div>
+                            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:12}}>
+                              {period !== "avant" && (
+                                <div>
+                                  <label style={C.label}>{period === "mi" ? "Poids début saison (kg)" : "Poids mi-saison (kg)"}</label>
+                                  {refWeight ? (
+                                    <div style={{padding:"10px",background:"#e3f2fd",borderRadius:8,fontWeight:700,color:"#1565c0",fontSize:14}}>{refWeight} kg (auto)</div>
+                                  ) : (
+                                    <input type="number" inputMode="decimal" value={newInfraction.weightStart||""} onChange={e=>setNewInfraction(p=>({...p,weightStart:e.target.value}))} placeholder="ex: 80.0" style={C.input}/>
+                                  )}
+                                </div>
+                              )}
+                              <div>
+                                <label style={C.label}>{period === "avant" ? "Poids de référence (kg)" : period === "mi" ? "Poids mi-saison (kg)" : "Poids fin de saison (kg)"}</label>
+                                <input type="number" inputMode="decimal" value={newInfraction.weightCurrent||""} onChange={e=>setNewInfraction(p=>({...p,weightCurrent:e.target.value}))} placeholder="ex: 82.5" style={C.input}/>
+                              </div>
+                              {period !== "avant" && newInfraction.weightCurrent && (
+                                <div style={{display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",background:"#fff3e0",borderRadius:8,padding:12}}>
+                                  <div style={{fontSize:11,fontWeight:700,color:"#e65100",textTransform:"uppercase"}}>Amende calculée</div>
+                                  <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:24,color:"#e65100"}}>{calcWeightAmount(refWeight || parseFloat(newInfraction.weightStart), parseFloat(newInfraction.weightCurrent)).toFixed(2)}€</div>
+                                </div>
                               )}
                             </div>
-                          )}
-                          <div>
-                            <label style={C.label}>{period === "avant" ? "Poids de référence (kg)" : period === "mi" ? "Poids mi-saison (kg)" : "Poids fin de saison (kg)"}</label>
-                            <input type="number" inputMode="decimal" value={newInfraction.weightCurrent||""} onChange={e=>setNewInfraction(p=>({...p,weightCurrent:e.target.value}))} placeholder="ex: 82.5" style={C.input}/>
+                            {period === "avant" && <div style={{fontSize:11,color:"#90a4ae",marginTop:6}}>💡 Ce poids sera enregistré comme référence de début de saison — aucune amende n'est appliquée.</div>}
                           </div>
-                          {period !== "avant" && newInfraction.weightCurrent && (
-                            <div style={{display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",background:"#fff3e0",borderRadius:8,padding:12}}>
-                              <div style={{fontSize:11,fontWeight:700,color:"#e65100",textTransform:"uppercase"}}>Amende calculée</div>
-                              <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:24,color:"#e65100"}}>{calcWeightAmount(refWeight || parseFloat(newInfraction.weightStart), parseFloat(newInfraction.weightCurrent)).toFixed(2)}€</div>
-                            </div>
-                          )}
+                          );
+                        })()}
+                        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:12}}>
+                          <div>
+                            <label style={C.label}>+ Détail personnalisé (optionnel)</label>
+                            <input value={newInfraction.customDetail} onChange={e=>setNewInfraction(p=>({...p,customDetail:e.target.value}))} placeholder="Description" style={C.input}/>
+                          </div>
+                          <div>
+                            <label style={C.label}>Montant (€)</label>
+                            <input type="number" inputMode="decimal" value={newInfraction.customAmount} onChange={e=>setNewInfraction(p=>({...p,customAmount:e.target.value}))} placeholder="0" style={C.input}/>
+                          </div>
                         </div>
-                        {period === "avant" && <div style={{fontSize:11,color:"#90a4ae",marginTop:6}}>💡 Ce poids sera enregistré comme référence de début de saison — aucune amende n'est appliquée.</div>}
-                      </div>
-                      );
-                    })()}
-                    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:12}}>
-                      <div>
-                        <label style={C.label}>+ Détail personnalisé (optionnel)</label>
-                        <input value={newInfraction.customDetail} onChange={e=>setNewInfraction(p=>({...p,customDetail:e.target.value}))} placeholder="Description" style={C.input}/>
-                      </div>
-                      <div>
-                        <label style={C.label}>Montant (€)</label>
-                        <input type="number" inputMode="decimal" value={newInfraction.customAmount} onChange={e=>setNewInfraction(p=>({...p,customAmount:e.target.value}))} placeholder="0" style={C.input}/>
-                      </div>
-                    </div>
+                      </>
+                    )}
+
                     <div style={{display:"flex",gap:10,marginTop:14}}>
-                      <button onClick={addInfraction} style={{background:"#1565c0",color:"white",border:"none",padding:"10px 22px",borderRadius:8,cursor:"pointer",fontWeight:800}}>Valider pour ce joueur</button>
-                      <button onClick={()=>{setShowAddInfraction(false);setNewInfraction(p=>({...p,player:"",checkedRules:{},useWeight:false,weightPeriod:"avant",customDetail:"",customAmount:""}));}} style={{background:"#eceff1",color:"#546e7a",border:"none",padding:"10px 18px",borderRadius:8,cursor:"pointer",fontWeight:700}}>Fermer</button>
+                      <button onClick={addInfraction} style={{background:"#1565c0",color:"white",border:"none",padding:"10px 22px",borderRadius:8,cursor:"pointer",fontWeight:800}}>Valider</button>
+                      <button onClick={()=>{setShowAddInfraction(false);setNewInfraction(p=>({...p,player:"",checkedRules:{},checkedPlayers:{},selectedRuleId:"",useWeight:false,weightPeriod:"avant",customDetail:"",customAmount:""}));}} style={{background:"#eceff1",color:"#546e7a",border:"none",padding:"10px 18px",borderRadius:8,cursor:"pointer",fontWeight:700}}>Fermer</button>
                     </div>
-                    <div style={{fontSize:11,color:"#90a4ae",marginTop:8}}>💡 Le match reste sélectionné : choisis simplement le joueur suivant pour enchaîner.</div>
+                    <div style={{fontSize:11,color:"#90a4ae",marginTop:8}}>
+                      💡 {newInfraction.mode==="player" ? "Le match reste sélectionné : choisis simplement le joueur suivant pour enchaîner." : "Le match et l'infraction restent sélectionnés : change juste les joueurs pour enchaîner."}
+                    </div>
                   </div>
                 )}
+
                 <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(150px,1fr))",gap:12}}>
                   {players.slice().sort((a,b)=>(playerStats[b]?.total||0)-(playerStats[a]?.total||0)).map(player => {
                     const isHidden = playersList.find(p=>p.name===player)?.hidden;
@@ -840,6 +1076,7 @@ export default function App() {
             )}
           </div>
         )}
+
         {activeTab==="Règles" && (
           <div>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
@@ -908,6 +1145,7 @@ export default function App() {
                   <button onClick={saveRule} style={{background:"#1565c0",color:"white",border:"none",padding:"10px 18px",borderRadius:8,cursor:"pointer",fontWeight:800}}>Sauver</button>
                   <button onClick={()=>setEditingRule(null)} style={{background:"#eceff1",color:"#546e7a",border:"none",padding:"10px 12px",borderRadius:8,cursor:"pointer"}}>✕</button>
                 </div>
+                <div style={{fontSize:11,color:"#90a4ae",marginTop:8}}>💡 Les infractions déjà enregistrées avec cette règle seront recalculées automatiquement.</div>
               </div>
             )}
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(250px,1fr))",gap:10}}>
@@ -923,6 +1161,7 @@ export default function App() {
             </div>
           </div>
         )}
+
         {activeTab==="Calendrier" && (
           <div>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
@@ -960,6 +1199,7 @@ export default function App() {
             </div>
           </div>
         )}
+
         {activeTab==="Stats" && (
           <div>
             <h2 style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:26,color:"#0d47a1",letterSpacing:1,margin:"0 0 16px"}}>📊 Stats</h2>
@@ -979,6 +1219,18 @@ export default function App() {
                     </div>
                   );
                 })}
+              </div>
+              <div style={{...C.card,gridColumn:"1/-1"}}>
+                <h3 style={C.h3}>🎯 Infraction la plus fréquente par type</h3>
+                {infractionLeaders.length === 0 ? (
+                  <div style={{color:"#90a4ae",padding:12,textAlign:"center"}}>Pas encore assez de données</div>
+                ) : infractionLeaders.map((it) => (
+                  <div key={it.label} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0",borderBottom:"1px solid #f0f0f0"}}>
+                    <div style={{flex:1,fontWeight:700,color:"#1a237e",fontSize:13}}>{it.label}</div>
+                    <div style={{fontWeight:700,color:"#546e7a",fontSize:13}}>{it.player}</div>
+                    <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:18,color:"#1565c0"}}>{it.count}×</div>
+                  </div>
+                ))}
               </div>
               <div style={C.card}>
                 <h3 style={C.h3}>😈 Classement Chaboulat</h3>
@@ -1003,6 +1255,7 @@ export default function App() {
             </div>
           </div>
         )}
+
       </div>
     </div>
   );
