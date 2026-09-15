@@ -121,6 +121,7 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(false);
   const [guestMode, setGuestMode] = useState(false);
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(null), 2500); };
+  const confirmAction = (msg) => (typeof window === "undefined" ? true : window.confirm(msg));
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
@@ -236,9 +237,13 @@ export default function App() {
   }, [statsRuleIds, rules]);
 
   const saveStatsRuleConfig = async (ids) => {
-    await setDoc(doc(db, "settings", "statsRules"), {ruleIds: ids});
-    setShowStatsRuleConfig(false);
-    showToast("Sélection des règles enregistrée ✓");
+    try {
+      await setDoc(doc(db, "settings", "statsRules"), {ruleIds: ids});
+      setShowStatsRuleConfig(false);
+      showToast("Sélection des règles enregistrée ✓");
+    } catch (e) {
+      showToast(e.code === "permission-denied" ? "Accès refusé par Firestore (règles de sécurité à ajuster pour 'settings')" : "Erreur lors de l'enregistrement");
+    }
   };
 
   const infractionLeaders = useMemo(() => {
@@ -274,6 +279,7 @@ export default function App() {
   const addPlayer = async () => {
     if (!newPlayerName.trim()) return;
     const name = newPlayerName.trim();
+    if (!confirmAction(`Ajouter le joueur "${name}" ?`)) return;
     await setDoc(doc(db, "playersList", name), {name, hidden: false, createdAt: Date.now()});
     if (!payments.find(p => p.player === name)) await setDoc(doc(db, "payments", name), {player: name, total: 0, paid: 0});
     setNewPlayerName(""); setShowAddPlayer(false);
@@ -281,6 +287,7 @@ export default function App() {
   };
 
   const hidePlayer = async (name) => {
+    if (!confirmAction(`Masquer ${name} ? Il n'apparaîtra plus dans les listes mais son historique est conservé.`)) return;
     const p = playersList.find(x => x.name === name);
     if (p) await updateDoc(doc(db, "playersList", name), {hidden: true});
     else await setDoc(doc(db, "playersList", name), {name, hidden: true, createdAt: Date.now()});
@@ -413,6 +420,10 @@ export default function App() {
 
     if (!entries.length) { showToast("Ajoute au moins une infraction"); return; }
 
+    const totalToAdd = entries.reduce((s,e)=>s+e.amount,0);
+    const involvedPlayers = Array.from(new Set(entries.map(e=>e.player))).join(", ");
+    if (!confirmAction(`Ajouter ${entries.length} infraction(s) pour ${involvedPlayers} (total ${totalToAdd.toFixed(2)}€) ?`)) return;
+
     await applyEntriesToMatch(entries, calMatchId);
 
     const byPlayer = {};
@@ -431,6 +442,7 @@ export default function App() {
     const m = matches.find(x => x.fbId === matchId || String(x.id) === String(matchId));
     if (!m) return;
     const entry = (m.entries||[])[entryIndex];
+    if (!confirmAction(entry ? `Supprimer l'infraction "${entry.detail}" (${entry.amount}€) de ${entry.player} ?` : "Supprimer cette infraction ?")) return;
     await updateDoc(doc(db, "matches", m.fbId||String(m.id)), {entries: (m.entries||[]).filter((_,i) => i !== entryIndex)});
     if (entry) {
       const p = payments.find(x => x.player === entry.player);
@@ -449,12 +461,14 @@ export default function App() {
 
   const addRule = async () => {
     if (!newRule.name || !newRule.amount) return;
+    if (!confirmAction(`Ajouter la règle "${newRule.name}" (${newRule.amount}€) ?`)) return;
     const r = {id: Date.now(), name: newRule.name, amount: parseFloat(newRule.amount)};
     await setDoc(doc(db, "rules", String(r.id)), r);
     setNewRule({name:"",amount:""}); setShowAddRule(false); showToast("Règle ajoutée ✓");
   };
 
   const saveRule = async () => {
+    if (!confirmAction(`Modifier "${editingRule.name}" à ${editingRule.amount}€ ? Toutes les infractions déjà enregistrées avec cette règle seront recalculées.`)) return;
     await updateDoc(doc(db, "rules", String(editingRule.id)), editingRule);
     const batch = writeBatch(db);
     let touched = false;
@@ -477,10 +491,16 @@ export default function App() {
     setEditingRule(null);
     showToast("Règle modifiée — infractions déjà enregistrées mises à jour ✓");
   };
-  const deleteRule = async (id) => { await deleteDoc(doc(db, "rules", String(id))); showToast("Règle supprimée"); };
+  const deleteRule = async (id) => {
+    const r = rules.find(x => String(x.id) === String(id));
+    if (!confirmAction(`Supprimer la règle "${r ? r.name : ""}" ? Les infractions déjà enregistrées avec cette règle ne seront pas supprimées.`)) return;
+    await deleteDoc(doc(db, "rules", String(id)));
+    showToast("Règle supprimée");
+  };
 
   const addCalendarMatch = async () => {
     if (!newCalMatch.opponent || !newCalMatch.date) return;
+    if (!confirmAction(`Ajouter le match vs ${newCalMatch.opponent} (${newCalMatch.date}) au calendrier ?`)) return;
     const m = {...newCalMatch, id: Date.now(), sortKey: 999, home: newCalMatch.home === true || newCalMatch.home === "true"};
     await setDoc(doc(db, "calendar", String(m.id)), m);
     setNewCalMatch({date:"",opponent:"",home:true,location:"",team:"Éq1"}); setShowAddCalendar(false); showToast("Match ajouté ✓");
@@ -504,6 +524,7 @@ export default function App() {
     const added = parseFloat(paymentInput) || 0;
     const p = payments.find(x => x.player === playerName);
     if (!p) return;
+    if (!confirmAction(`Enregistrer un paiement de ${added.toFixed(2)}€ pour ${playerName} ?`)) return;
     await updateDoc(doc(db, "payments", p.fbId||playerName), {paid: Math.min(p.paid + added, p.total)});
     setEditingPayment(null); setPaymentInput(""); showToast("Paiement enregistré ✓");
   };
