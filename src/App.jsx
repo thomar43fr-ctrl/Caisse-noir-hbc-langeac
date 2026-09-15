@@ -8,6 +8,7 @@ import {
   signOut, onAuthStateChanged
 } from "firebase/auth";
 import { INITIAL_RULES, INITIAL_PAYMENTS, INITIAL_CALENDAR } from "./data";
+import jsPDF from "jspdf";
 const HISTORICAL_MATCHES = [];
 function parseMatchDate(str) {
   if (!str) return null;
