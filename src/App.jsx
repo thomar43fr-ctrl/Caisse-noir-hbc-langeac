@@ -112,6 +112,10 @@ export default function App() {
   const [tempStatsRuleIds, setTempStatsRuleIds] = useState([]);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState(null);
+  const [ruleHistory, setRuleHistory] = useState([]);
+  const [showRuleHistory, setShowRuleHistory] = useState(false);
+  const [darkMode, setDarkMode] = useState(false);
+  const [playerSearch, setPlayerSearch] = useState("");
   const [user, setUser] = useState(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [authMode, setAuthMode] = useState("login");
@@ -148,7 +152,8 @@ export default function App() {
     const unsubPlayers = onSnapshot(collection(db, "playersList"), snap => { setPlayersList(snap.docs.map(d => ({...d.data(), id: d.id}))); checkDone(); });
     const unsubWeights = onSnapshot(collection(db, "weights"), snap => { setWeights(snap.docs.map(d => ({...d.data(), fbId: d.id}))); checkDone(); });
     const unsubStatsRules = onSnapshot(doc(db, "settings", "statsRules"), snap => { if (snap.exists()) setStatsRuleIds(snap.data().ruleIds || []); });
-    return () => { unsubRules(); unsubMatches(); unsubPayments(); unsubCal(); unsubPlayers(); unsubWeights(); unsubStatsRules(); };
+    const unsubRuleHistory = onSnapshot(collection(db, "ruleHistory"), snap => { setRuleHistory(snap.docs.map(d => ({...d.data(), fbId: d.id})).sort((a,b)=>(b.timestamp||0)-(a.timestamp||0))); });
+    return () => { unsubRules(); unsubMatches(); unsubPayments(); unsubCal(); unsubPlayers(); unsubWeights(); unsubStatsRules(); unsubRuleHistory(); };
   }, [user, guestMode]);
 
   useEffect(() => {
@@ -470,17 +475,26 @@ export default function App() {
     showToast("Infraction supprimée");
   };
 
+  const logRuleHistory = async (entry) => {
+    try {
+      await setDoc(doc(collection(db, "ruleHistory")), {...entry, timestamp: Date.now(), by: user?.email || (guestMode ? "invité" : "?")});
+    } catch (e) { /* l'historique ne doit jamais bloquer l'action principale */ }
+  };
+
   const addRule = async () => {
     if (!newRule.name || !newRule.amount) return;
     if (!confirmAction(`Ajouter la règle "${newRule.name}" (${newRule.amount}€) ?`)) return;
     const r = {id: Date.now(), name: newRule.name, amount: parseFloat(newRule.amount)};
     await setDoc(doc(db, "rules", String(r.id)), r);
+    await logRuleHistory({action: "ajout", ruleName: r.name, newAmount: r.amount});
     setNewRule({name:"",amount:""}); setShowAddRule(false); showToast("Règle ajoutée ✓");
   };
 
   const saveRule = async () => {
     if (!confirmAction(`Modifier "${editingRule.name}" à ${editingRule.amount}€ ? Toutes les infractions déjà enregistrées avec cette règle seront recalculées.`)) return;
+    const oldRule = rules.find(r => String(r.id) === String(editingRule.id));
     await updateDoc(doc(db, "rules", String(editingRule.id)), editingRule);
+    await logRuleHistory({action: "modification", ruleName: editingRule.name, oldName: oldRule?.name, oldAmount: oldRule?.amount, newAmount: editingRule.amount});
     const batch = writeBatch(db);
     let touched = false;
     matches.forEach(m => {
@@ -506,6 +520,7 @@ export default function App() {
     const r = rules.find(x => String(x.id) === String(id));
     if (!confirmAction(`Supprimer la règle "${r ? r.name : ""}" ? Les infractions déjà enregistrées avec cette règle ne seront pas supprimées.`)) return;
     await deleteDoc(doc(db, "rules", String(id)));
+    await logRuleHistory({action: "suppression", ruleName: r?.name, oldAmount: r?.amount});
     showToast("Règle supprimée");
   };
 
@@ -653,7 +668,7 @@ export default function App() {
   );
 
   return (
-    <div style={{minHeight:"100vh",background:"#f0f6ff",fontFamily:"'Nunito',sans-serif"}}>
+    <div style={{minHeight:"100vh",background:"#f0f6ff",fontFamily:"'Nunito',sans-serif",filter:darkMode?"invert(0.92) hue-rotate(180deg)":"none"}}>
       {toast && <div style={{position:"fixed",top:16,left:"50%",transform:"translateX(-50%)",background:"#1565c0",color:"white",padding:"10px 24px",borderRadius:30,fontWeight:800,fontSize:14,zIndex:9999,boxShadow:"0 4px 20px rgba(0,0,0,0.2)",whiteSpace:"nowrap"}}>{toast}</div>}
 
       {editingPlayerName && (
@@ -759,6 +774,9 @@ export default function App() {
               </div>
               <div style={{color:"white",fontSize:11,fontWeight:800,marginTop:2}}>{goalPct}%</div>
             </div>
+            <button onClick={()=>setDarkMode(d=>!d)} title="Mode sombre" style={{background:"rgba(255,255,255,0.15)",border:"none",borderRadius:10,padding:"8px 10px",color:"white",cursor:"pointer",fontSize:15,lineHeight:1}}>
+              {darkMode ? "☀️" : "🌙"}
+            </button>
             <button onClick={()=>{ if(user) signOut(auth); setGuestMode(false); }} style={{background:"rgba(255,255,255,0.15)",border:"none",borderRadius:10,padding:"8px 10px",color:"white",cursor:"pointer",fontSize:11,fontWeight:700,lineHeight:1.4}}>
               {isAdmin?"👑":guestMode?"👁️":"👤"}<br/>Déco
             </button>
@@ -1111,8 +1129,9 @@ export default function App() {
                   </div>
                 )}
 
+                <input value={playerSearch} onChange={e=>setPlayerSearch(e.target.value)} placeholder="🔍 Rechercher un joueur..." style={{...C.input,marginBottom:14,maxWidth:320}}/>
                 <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(150px,1fr))",gap:12}}>
-                  {players.slice().sort((a,b)=>(playerStats[b]?.total||0)-(playerStats[a]?.total||0)).map(player => {
+                  {players.filter(p => p.toLowerCase().includes(playerSearch.trim().toLowerCase())).slice().sort((a,b)=>(playerStats[b]?.total||0)-(playerStats[a]?.total||0)).map(player => {
                     const isHidden = playersList.find(p=>p.name===player)?.hidden;
                     if (isHidden) return null;
                     return (
@@ -1144,6 +1163,29 @@ export default function App() {
               <h2 style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:26,color:"#0d47a1",letterSpacing:1,margin:0}}>📋 Règles</h2>
               {isAdmin && <button onClick={()=>setShowAddRule(!showAddRule)} style={{background:"#1565c0",color:"white",border:"none",padding:"10px 18px",borderRadius:10,cursor:"pointer",fontWeight:800,fontSize:13}}>+ Règle</button>}
             </div>
+            {isAdmin && (
+              <div style={{marginBottom:12}}>
+                <button onClick={()=>setShowRuleHistory(!showRuleHistory)} style={{background:"#e3f2fd",color:"#1565c0",border:"none",padding:"8px 14px",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:12}}>
+                  🕘 Historique des modifications ({ruleHistory.length}) {showRuleHistory?"▲":"▼"}
+                </button>
+                {showRuleHistory && (
+                  <div style={{background:"white",borderRadius:12,padding:12,marginTop:8,boxShadow:"0 2px 8px rgba(0,0,0,0.06)",maxHeight:260,overflowY:"auto"}}>
+                    {ruleHistory.length === 0 ? (
+                      <div style={{color:"#90a4ae",padding:12,textAlign:"center",fontSize:12}}>Aucune modification enregistrée pour l'instant</div>
+                    ) : ruleHistory.map(h => (
+                      <div key={h.fbId} style={{padding:"8px 10px",borderBottom:"1px solid #f0f0f0",fontSize:12}}>
+                        <div style={{fontWeight:700,color:"#1a237e"}}>
+                          {h.action === "ajout" && `➕ Règle "${h.ruleName}" ajoutée à ${h.newAmount}€`}
+                          {h.action === "modification" && `✏️ Règle "${h.oldName||h.ruleName}" modifiée : ${h.oldAmount}€ → ${h.newAmount}€${h.oldName && h.oldName!==h.ruleName ? ` (renommée en "${h.ruleName}")` : ""}`}
+                          {h.action === "suppression" && `🗑 Règle "${h.ruleName}" supprimée (était à ${h.oldAmount}€)`}
+                        </div>
+                        <div style={{color:"#90a4ae",marginTop:2}}>{h.timestamp ? new Date(h.timestamp).toLocaleString("fr-FR") : ""} {h.by ? `— ${h.by}` : ""}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
             <div style={{background:"#fff3e0",borderRadius:14,padding:"14px 16px",boxShadow:"0 2px 8px rgba(0,0,0,0.06)",display:"flex",alignItems:"center",borderLeft:"4px solid #e65100",marginBottom:12}}>
               <div style={{fontSize:22,marginRight:12}}>⚖️</div>
               <div style={{flex:1}}>
