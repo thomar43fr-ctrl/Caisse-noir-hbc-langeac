@@ -115,7 +115,6 @@ export default function App() {
   const [toast, setToast] = useState(null);
   const [ruleHistory, setRuleHistory] = useState([]);
   const [showRuleHistory, setShowRuleHistory] = useState(false);
-  const [darkMode, setDarkMode] = useState(false);
   const [playerSearch, setPlayerSearch] = useState("");
   const [user, setUser] = useState(null);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -787,7 +786,7 @@ export default function App() {
   );
 
   return (
-    <div style={{minHeight:"100vh",background:"#f0f6ff",fontFamily:"'Nunito',sans-serif",filter:darkMode?"invert(0.92) hue-rotate(180deg)":"none"}}>
+    <div style={{minHeight:"100vh",background:"#f0f6ff",fontFamily:"'Nunito',sans-serif"}}>
       {toast && <div style={{position:"fixed",top:16,left:"50%",transform:"translateX(-50%)",background:"#1565c0",color:"white",padding:"10px 24px",borderRadius:30,fontWeight:800,fontSize:14,zIndex:9999,boxShadow:"0 4px 20px rgba(0,0,0,0.2)",whiteSpace:"nowrap"}}>{toast}</div>}
 
       {editingPlayerName && (
@@ -899,9 +898,6 @@ export default function App() {
               </div>
               <div style={{color:"white",fontSize:11,fontWeight:800,marginTop:2}}>{goalPct}%</div>
             </div>
-            <button onClick={()=>setDarkMode(d=>!d)} title="Mode sombre" style={{background:"rgba(255,255,255,0.15)",border:"none",borderRadius:10,padding:"8px 10px",color:"white",cursor:"pointer",fontSize:15,lineHeight:1}}>
-              {darkMode ? "☀️" : "🌙"}
-            </button>
             <button onClick={()=>{ if(user) signOut(auth); setGuestMode(false); }} style={{background:"rgba(255,255,255,0.15)",border:"none",borderRadius:10,padding:"8px 10px",color:"white",cursor:"pointer",fontSize:11,fontWeight:700,lineHeight:1.4}}>
               {isAdmin?"👑":guestMode?"👁️":"👤"}<br/>Déco
             </button>
