@@ -60,6 +60,15 @@ const WEIGHT_PERIODS = [
   { key: "fin", label: "Fin de saison" },
 ];
 const QTY_OPTIONS = [1,2,3,4,5];
+// Noms des règles à privilégier par défaut dans le tableau "infraction la plus
+// fréquente" des Stats — elles doivent déjà exister (avec leur prix) dans tes
+// règles. Si un nom ne correspond pas exactement, utilise le bouton
+// "⚙️ Choisir les règles" dans Stats pour les sélectionner à la main.
+const DEFAULT_STATS_RULE_NAMES = [
+  "sortie veille de match","fantôme","craquage mental","poule non officiel",
+  "mitraillette","vomi en soirée","contre attaque raté","penalty raté",
+  "tir fantaisie raté","tir fantaisie pris"
+].map(s => s.toLowerCase());
 
 export default function App() {
   const [rules, setRules] = useState(INITIAL_RULES);
@@ -98,6 +107,9 @@ export default function App() {
   const [paymentInput, setPaymentInput] = useState("");
   const [viewMatchDetail, setViewMatchDetail] = useState(null);
   const [expandedPlayerInMatch, setExpandedPlayerInMatch] = useState(null);
+  const [statsRuleIds, setStatsRuleIds] = useState(null);
+  const [showStatsRuleConfig, setShowStatsRuleConfig] = useState(false);
+  const [tempStatsRuleIds, setTempStatsRuleIds] = useState([]);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState(null);
   const [user, setUser] = useState(null);
@@ -134,7 +146,8 @@ export default function App() {
     const unsubCal = onSnapshot(collection(db, "calendar"), snap => { if (!snap.empty) setCalendar(snap.docs.map(d => ({...d.data(), fbId: d.id}))); checkDone(); });
     const unsubPlayers = onSnapshot(collection(db, "playersList"), snap => { setPlayersList(snap.docs.map(d => ({...d.data(), id: d.id}))); checkDone(); });
     const unsubWeights = onSnapshot(collection(db, "weights"), snap => { setWeights(snap.docs.map(d => ({...d.data(), fbId: d.id}))); checkDone(); });
-    return () => { unsubRules(); unsubMatches(); unsubPayments(); unsubCal(); unsubPlayers(); unsubWeights(); };
+    const unsubStatsRules = onSnapshot(doc(db, "settings", "statsRules"), snap => { if (snap.exists()) setStatsRuleIds(snap.data().ruleIds || []); });
+    return () => { unsubRules(); unsubMatches(); unsubPayments(); unsubCal(); unsubPlayers(); unsubWeights(); unsubStatsRules(); };
   }, [user, guestMode]);
 
   useEffect(() => {
@@ -214,10 +227,26 @@ export default function App() {
   const topOffenders = useMemo(() => Object.entries(playerStats).filter(([,s]) => s.total > 0).sort((a,b) => b[1].total-a[1].total).slice(0,5), [playerStats]);
   const topChaboula = useMemo(() => Object.entries(playerStats).sort((a,b) => b[1].chaboula-a[1].chaboula).slice(0,5), [playerStats]);
 
+  // Si l'admin n'a jamais configuré la sélection manuellement, on essaie de
+  // retrouver automatiquement les règles déjà existantes qui correspondent
+  // aux noms demandés. Sinon, on utilise la sélection manuelle enregistrée.
+  const effectiveStatsRuleIds = useMemo(() => {
+    if (statsRuleIds !== null) return statsRuleIds;
+    return rules.filter(r => DEFAULT_STATS_RULE_NAMES.includes((r.name||"").toLowerCase())).map(r=>r.id);
+  }, [statsRuleIds, rules]);
+
+  const saveStatsRuleConfig = async (ids) => {
+    await setDoc(doc(db, "settings", "statsRules"), {ruleIds: ids});
+    setShowStatsRuleConfig(false);
+    showToast("Sélection des règles enregistrée ✓");
+  };
+
   const infractionLeaders = useMemo(() => {
+    const allowed = effectiveStatsRuleIds.length ? new Set(effectiveStatsRuleIds.map(String)) : null;
     const byType = {};
     allEntries.forEach(e => {
       if (!e.ruleId) return;
+      if (allowed && !allowed.has(String(e.ruleId))) return;
       const rule = rules.find(r => String(r.id) === String(e.ruleId));
       const label = rule ? rule.name : (e.detail||"").replace(/\s*\(x\d+\)$/,"");
       if (!label) return;
@@ -228,7 +257,7 @@ export default function App() {
       const top = Object.entries(playersMap).sort((a,b)=>b[1]-a[1])[0];
       return top ? {label, player: top[0], count: top[1]} : null;
     }).filter(Boolean).sort((a,b)=>b.count-a.count);
-  }, [allEntries, rules]);
+  }, [allEntries, rules, effectiveStatsRuleIds]);
 
   const getMatchDoc = (calMatch) => {
     if (!calMatch) return null;
@@ -1221,7 +1250,32 @@ export default function App() {
                 })}
               </div>
               <div style={{...C.card,gridColumn:"1/-1"}}>
-                <h3 style={C.h3}>🎯 Infraction la plus fréquente par type</h3>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16,flexWrap:"wrap",gap:8}}>
+                  <h3 style={{...C.h3,margin:0}}>🎯 Infraction la plus fréquente par type</h3>
+                  {isAdmin && (
+                    <button onClick={()=>{setTempStatsRuleIds(effectiveStatsRuleIds); setShowStatsRuleConfig(!showStatsRuleConfig);}} style={{background:"#e3f2fd",color:"#1565c0",border:"none",padding:"6px 12px",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:12}}>⚙️ Choisir les règles</button>
+                  )}
+                </div>
+                {showStatsRuleConfig && (
+                  <div style={{background:"#f8fbff",borderRadius:10,padding:12,marginBottom:14}}>
+                    <div style={{fontSize:11,color:"#78909c",marginBottom:8}}>Coche les règles à inclure dans ce classement (parmi tes règles existantes) :</div>
+                    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(200px,1fr))",gap:6,maxHeight:220,overflowY:"auto",marginBottom:10}}>
+                      {rules.map(r => {
+                        const checked = tempStatsRuleIds.map(String).includes(String(r.id));
+                        return (
+                          <label key={r.id} style={{display:"flex",alignItems:"center",gap:8,padding:"4px 6px",cursor:"pointer"}}>
+                            <input type="checkbox" checked={checked} onChange={()=>setTempStatsRuleIds(prev => checked ? prev.filter(id=>String(id)!==String(r.id)) : [...prev, r.id])}/>
+                            <span style={{fontSize:13,color:"#1a237e"}}>{r.name}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                    <div style={{display:"flex",gap:8}}>
+                      <button onClick={()=>saveStatsRuleConfig(tempStatsRuleIds)} style={{background:"#1565c0",color:"white",border:"none",padding:"8px 16px",borderRadius:8,cursor:"pointer",fontWeight:800,fontSize:12}}>Enregistrer</button>
+                      <button onClick={()=>setShowStatsRuleConfig(false)} style={{background:"#eceff1",color:"#546e7a",border:"none",padding:"8px 14px",borderRadius:8,cursor:"pointer",fontSize:12}}>Annuler</button>
+                    </div>
+                  </div>
+                )}
                 {infractionLeaders.length === 0 ? (
                   <div style={{color:"#90a4ae",padding:12,textAlign:"center"}}>Pas encore assez de données</div>
                 ) : infractionLeaders.map((it) => (
