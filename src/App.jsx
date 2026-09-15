@@ -247,14 +247,25 @@ export default function App() {
   };
 
   const infractionLeaders = useMemo(() => {
-    const allowed = effectiveStatsRuleIds.length ? new Set(effectiveStatsRuleIds.map(String)) : null;
+    const allowedIds = effectiveStatsRuleIds.length ? new Set(effectiveStatsRuleIds.map(String)) : null;
+    const allowedRules = allowedIds ? rules.filter(r => allowedIds.has(String(r.id))) : rules;
     const byType = {};
     allEntries.forEach(e => {
-      if (!e.ruleId) return;
-      if (allowed && !allowed.has(String(e.ruleId))) return;
-      const rule = rules.find(r => String(r.id) === String(e.ruleId));
-      const label = rule ? rule.name : (e.detail||"").replace(/\s*\(x\d+\)$/,"");
-      if (!label) return;
+      if (!e.detail || !e.player) return;
+      const stripped = e.detail.replace(/\s*\(x\d+\)$/,"").trim().toLowerCase();
+      let matchedRule = null;
+      if (e.ruleId) {
+        // Infraction créée après l'ajout du suivi par règle : on ne compte
+        // que si la règle fait partie de la sélection actuelle.
+        matchedRule = allowedRules.find(r => String(r.id) === String(e.ruleId));
+        if (!matchedRule) return;
+      } else {
+        // Infraction plus ancienne, sans ruleId enregistré : on retombe sur
+        // une correspondance par nom pour ne pas perdre l'historique.
+        matchedRule = allowedRules.find(r => (r.name||"").trim().toLowerCase() === stripped);
+        if (!matchedRule) return;
+      }
+      const label = matchedRule.name;
       if (!byType[label]) byType[label] = {};
       byType[label][e.player] = (byType[label][e.player]||0) + (e.qty||1);
     });
