@@ -261,13 +261,9 @@ export default function App() {
       const stripped = e.detail.replace(/\s*\(x\d+\)$/,"").trim().toLowerCase();
       let matchedRule = null;
       if (e.ruleId) {
-        // Infraction créée après l'ajout du suivi par règle : on ne compte
-        // que si la règle fait partie de la sélection actuelle.
         matchedRule = allowedRules.find(r => String(r.id) === String(e.ruleId));
         if (!matchedRule) return;
       } else {
-        // Infraction plus ancienne, sans ruleId enregistré : on retombe sur
-        // une correspondance par nom pour ne pas perdre l'historique.
         matchedRule = allowedRules.find(r => (r.name||"").trim().toLowerCase() === stripped);
         if (!matchedRule) return;
       }
@@ -285,6 +281,127 @@ export default function App() {
     if (!calMatch) return null;
     const calId = calMatch.fbId || String(calMatch.id);
     return matches.find(m => (m.fbId || String(m.id)) === calId);
+  };
+
+  // ---- Résumé du match : texte formaté (copier-coller) + PDF téléchargeable ----
+  const generateMatchSummaryText = (m, ranked, total) => {
+    const lines = [];
+    lines.push(`HBC LANGEAC — vs ${m.opponent}`);
+    lines.push(m.result ? `${m.result.toUpperCase()}${m.score ? ` (${m.score})` : ""}` : "Résultat non renseigné");
+    lines.push(`${m.date || ""}${m.location ? " • "+m.location : ""}${m.home !== undefined ? " • "+(m.home?"Domicile":"Extérieur") : ""}${m.team ? " • "+m.team : ""}`);
+    lines.push("");
+    if (!ranked.length) {
+      lines.push("Aucune infraction enregistrée pour ce match.");
+    } else {
+      lines.push("Détail des infractions par joueur :");
+      lines.push("");
+      ranked.forEach(([playerName, data]) => {
+        lines.push(`${playerName} — ${data.total}€`);
+        data.items.forEach(item => lines.push(`   - ${item.detail} : ${item.amount}€`));
+        lines.push("");
+      });
+      lines.push(`TOTAL AMENDES DU MATCH : ${total}€`);
+    }
+    return lines.join("\n");
+  };
+
+  const downloadMatchPDF = (m, ranked, total) => {
+    try {
+      const pdf = new jsPDF();
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+      let y = 22;
+
+      pdf.setFont("helvetica", "bold");
+      pdf.setFontSize(18);
+      pdf.text(`HBC LANGEAC — vs ${m.opponent || "?"}`, pageWidth / 2, y, { align: "center" });
+      y += 8;
+
+      pdf.setFontSize(13);
+      pdf.setFont("helvetica", "normal");
+      const resultLine = m.result ? `${m.result.toUpperCase()}${m.score ? ` (${m.score})` : ""}` : "Résultat non renseigné";
+      pdf.text(resultLine, pageWidth / 2, y, { align: "center" });
+      y += 7;
+
+      pdf.setFontSize(10);
+      pdf.setTextColor(110);
+      const infoLine = `${m.date || ""}${m.location ? " • " + m.location : ""}${m.home !== undefined ? " • " + (m.home ? "Domicile" : "Extérieur") : ""}${m.team ? " • " + m.team : ""}`;
+      pdf.text(infoLine, pageWidth / 2, y, { align: "center" });
+      y += 8;
+
+      pdf.setTextColor(0);
+      pdf.setDrawColor(190);
+      pdf.line(15, y, pageWidth - 15, y);
+      y += 10;
+
+      const ensureSpace = (needed) => {
+        if (y + needed > pageHeight - 20) { pdf.addPage(); y = 20; }
+      };
+
+      if (!ranked.length) {
+        pdf.setFontSize(12);
+        pdf.text("Aucune infraction enregistrée pour ce match.", 15, y);
+        y += 8;
+      } else {
+        pdf.setFontSize(13);
+        pdf.setFont("helvetica", "bold");
+        pdf.text("Détail des infractions par joueur", 15, y);
+        y += 8;
+
+        ranked.forEach(([playerName, data]) => {
+          ensureSpace(8);
+          pdf.setFontSize(12);
+          pdf.setFont("helvetica", "bold");
+          pdf.text(`${playerName} — ${data.total}€`, 15, y);
+          y += 6;
+          pdf.setFont("helvetica", "normal");
+          pdf.setFontSize(10.5);
+          data.items.forEach(item => {
+            ensureSpace(6);
+            pdf.text(`- ${item.detail} : ${item.amount}€`, 20, y);
+            y += 5.5;
+          });
+          y += 3;
+        });
+
+        ensureSpace(14);
+        pdf.setDrawColor(190);
+        pdf.line(15, y, pageWidth - 15, y);
+        y += 9;
+        pdf.setFontSize(13);
+        pdf.setFont("helvetica", "bold");
+        pdf.text(`Total amendes du match : ${total}€`, 15, y);
+      }
+
+      const safeOpp = (m.opponent || "match").replace(/[^a-z0-9]+/gi, "_");
+      const safeDate = (m.date || "").replace(/[^a-z0-9]+/gi, "_");
+      pdf.save(`HBC_Langeac_vs_${safeOpp}${safeDate ? "_"+safeDate : ""}.pdf`);
+      showToast("PDF téléchargé ✓");
+    } catch (e) {
+      showToast("Impossible de générer le PDF sur cet appareil");
+    }
+  };
+
+  const copyMatchSummary = async (m, ranked, total) => {
+    const text = generateMatchSummaryText(m, ranked, total);
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+        showToast("Résumé copié dans le presse-papier ✓");
+        return;
+      }
+      throw new Error("clipboard indisponible");
+    } catch (e) {
+      const w = typeof window !== "undefined" ? window.open("", "_blank") : null;
+      if (w) {
+        const escaped = text.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+        w.document.write(`<html><head><title>Résumé vs ${m.opponent||""}</title></head><body style="font-family:monospace;padding:24px;"><pre style="white-space:pre-wrap;">${escaped}</pre></body></html>`);
+        w.document.close();
+        showToast("Page ouverte — sélectionne le texte pour le copier");
+      } else {
+        showToast("Impossible de copier automatiquement — autorise les pop-ups puis réessaie");
+      }
+    }
   };
 
   const calcWeightAmount = (startWeight, currentWeight) => {
@@ -746,8 +863,14 @@ export default function App() {
                   </div>
                 );
               })}
+
+              <div style={{display:"flex",gap:8,marginTop:16}}>
+                <button onClick={()=>downloadMatchPDF(m, ranked, total)} style={{flex:1,background:"#0d47a1",color:"white",border:"none",padding:"10px",borderRadius:10,cursor:"pointer",fontWeight:800,fontSize:13}}>📄 Télécharger le PDF</button>
+                <button onClick={()=>copyMatchSummary(m, ranked, total)} style={{flex:1,background:"#e3f2fd",color:"#1565c0",border:"none",padding:"10px",borderRadius:10,cursor:"pointer",fontWeight:800,fontSize:13}}>📋 Copier le texte</button>
+              </div>
+
               {isAdmin && (
-                <button onClick={()=>{ setNewInfraction(p=>({...p, mode:"player", calMatchId: m.fbId||String(m.id)})); setActiveTab("Joueurs"); setShowAddInfraction(true); closeModal(); }} style={{marginTop:14,width:"100%",background:"#1565c0",color:"white",border:"none",padding:"10px",borderRadius:10,cursor:"pointer",fontWeight:800,fontSize:13}}>+ Ajouter une infraction pour ce match</button>
+                <button onClick={()=>{ setNewInfraction(p=>({...p, mode:"player", calMatchId: m.fbId||String(m.id)})); setActiveTab("Joueurs"); setShowAddInfraction(true); closeModal(); }} style={{marginTop:8,width:"100%",background:"#1565c0",color:"white",border:"none",padding:"10px",borderRadius:10,cursor:"pointer",fontWeight:800,fontSize:13}}>+ Ajouter une infraction pour ce match</button>
               )}
             </div>
           </div>
