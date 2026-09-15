@@ -8,7 +8,7 @@ import {
   signOut, onAuthStateChanged
 } from "firebase/auth";
 import { INITIAL_RULES, INITIAL_PAYMENTS, INITIAL_CALENDAR } from "./data";
-import jsPDF from "jspdf";
+import { jsPDF } from "jspdf";
 const HISTORICAL_MATCHES = [];
 function parseMatchDate(str) {
   if (!str) return null;
@@ -378,6 +378,7 @@ export default function App() {
       pdf.save(`HBC_Langeac_vs_${safeOpp}${safeDate ? "_"+safeDate : ""}.pdf`);
       showToast("PDF téléchargé ✓");
     } catch (e) {
+      console.error("Erreur génération PDF:", e);
       showToast("Impossible de générer le PDF sur cet appareil");
     }
   };
