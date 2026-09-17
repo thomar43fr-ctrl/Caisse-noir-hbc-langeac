@@ -71,11 +71,36 @@ const DEFAULT_STATS_RULE_NAMES = [
   "tir fantaisie raté","tir fantaisie pris"
 ].map(s => s.toLowerCase());
 
+// ---------------------------------------------------------------------------
+// GROUPES
+// Chaque groupe (ex: "Gars 26-27", "Filles 26-27", "Vétérans") possède ses
+// propres sous-collections dans Firestore :
+//   groups/{groupId}/rules, /matches, /payments, /calendar, /playersList,
+//   /weights, /ruleHistory, /settings
+// Un admin reste admin partout (accès total à tous les groupes).
+// ---------------------------------------------------------------------------
+const GROUP_SUBCOLLECTIONS = ["rules","matches","payments","calendar","playersList","weights","ruleHistory"];
+const LEGACY_GROUP_NAME = "Saison 25-26";
+const LEGACY_GROUP_ID = "saison-25-26";
+const LAST_GROUP_KEY = "hbc_last_group";
+
+const readLastGroup = () => { try { return localStorage.getItem(LAST_GROUP_KEY); } catch(e) { return null; } };
+const writeLastGroup = (id) => { try { id ? localStorage.setItem(LAST_GROUP_KEY, id) : localStorage.removeItem(LAST_GROUP_KEY); } catch(e) {} };
+
 export default function App() {
-  const [rules, setRules] = useState(INITIAL_RULES);
+  // --- Groupes ---
+  const [groups, setGroups] = useState([]);
+  const [groupsLoading, setGroupsLoading] = useState(true);
+  const [activeGroupId, setActiveGroupId] = useState(null);
+  const [showCreateGroup, setShowCreateGroup] = useState(false);
+  const [newGroup, setNewGroup] = useState({name:"", seedRules:true, seedCalendar:false});
+  const [editingGroup, setEditingGroup] = useState(null);
+  const [migrating, setMigrating] = useState(false);
+
+  const [rules, setRules] = useState([]);
   const [matches, setMatches] = useState(HISTORICAL_MATCHES);
-  const [calendar, setCalendar] = useState(INITIAL_CALENDAR);
-  const [payments, setPayments] = useState(INITIAL_PAYMENTS);
+  const [calendar, setCalendar] = useState([]);
+  const [payments, setPayments] = useState([]);
   const [playersList, setPlayersList] = useState([]);
   const [weights, setWeights] = useState([]);
   const [activeTab, setActiveTab] = useState("Dashboard");
@@ -111,13 +136,14 @@ export default function App() {
   const [statsRuleIds, setStatsRuleIds] = useState(null);
   const [showStatsRuleConfig, setShowStatsRuleConfig] = useState(false);
   const [tempStatsRuleIds, setTempStatsRuleIds] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState(null);
   const [ruleHistory, setRuleHistory] = useState([]);
   const [showRuleHistory, setShowRuleHistory] = useState(false);
   const [playerSearch, setPlayerSearch] = useState("");
   const [user, setUser] = useState(null);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [authReady, setAuthReady] = useState(false);
   const [authMode, setAuthMode] = useState("login");
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
@@ -127,6 +153,11 @@ export default function App() {
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(null), 2500); };
   const confirmAction = (msg) => (typeof window === "undefined" ? true : window.confirm(msg));
 
+  // Raccourcis : toutes les lectures/écritures passent par le groupe actif
+  const gcol = (name) => collection(db, "groups", activeGroupId, name);
+  const gdoc = (name, id) => doc(db, "groups", activeGroupId, name, String(id));
+  const activeGroup = useMemo(() => groups.find(g => g.id === activeGroupId) || null, [groups, activeGroupId]);
+
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
       setUser(u);
@@ -135,57 +166,175 @@ export default function App() {
           const adminDoc = await getDoc(doc(db, "admins", u.email));
           setIsAdmin(adminDoc.exists());
         } catch(e) { setIsAdmin(false); }
-      } else { setIsAdmin(false); setLoading(false); }
+      } else { setIsAdmin(false); }
+      setAuthReady(true);
     });
     return () => unsub();
   }, []);
 
+  // --- Liste des groupes ---
   useEffect(() => {
-    if (!user && !guestMode) { setLoading(false); return; }
-    setLoading(true);
-    let loaded = 0;
-    const checkDone = () => { loaded++; if (loaded >= 6) setLoading(false); };
-    const unsubRules = onSnapshot(collection(db, "rules"), snap => { if (!snap.empty) setRules(snap.docs.map(d => ({...d.data(), id: d.id}))); checkDone(); });
-    const unsubMatches = onSnapshot(collection(db, "matches"), snap => { if (!snap.empty) { const fbMatches = snap.docs.map(d => ({...d.data(), fbId: d.id})); setMatches(fbMatches.sort((a,b) => (a.sortKey||0)-(b.sortKey||0))); } checkDone(); });
-    const unsubPayments = onSnapshot(collection(db, "payments"), snap => { if (!snap.empty) setPayments(snap.docs.map(d => ({...d.data(), fbId: d.id}))); checkDone(); });
-    const unsubCal = onSnapshot(collection(db, "calendar"), snap => { if (!snap.empty) setCalendar(snap.docs.map(d => ({...d.data(), fbId: d.id}))); checkDone(); });
-    const unsubPlayers = onSnapshot(collection(db, "playersList"), snap => { setPlayersList(snap.docs.map(d => ({...d.data(), id: d.id}))); checkDone(); });
-    const unsubWeights = onSnapshot(collection(db, "weights"), snap => { setWeights(snap.docs.map(d => ({...d.data(), fbId: d.id}))); checkDone(); });
-    const unsubStatsRules = onSnapshot(doc(db, "settings", "statsRules"), snap => { if (snap.exists()) setStatsRuleIds(snap.data().ruleIds || []); });
-    const unsubRuleHistory = onSnapshot(collection(db, "ruleHistory"), snap => { setRuleHistory(snap.docs.map(d => ({...d.data(), fbId: d.id})).sort((a,b)=>(b.timestamp||0)-(a.timestamp||0))); });
-    return () => { unsubRules(); unsubMatches(); unsubPayments(); unsubCal(); unsubPlayers(); unsubWeights(); unsubStatsRules(); unsubRuleHistory(); };
+    if (!user && !guestMode) { setGroups([]); setGroupsLoading(false); setActiveGroupId(null); return; }
+    setGroupsLoading(true);
+    const unsub = onSnapshot(collection(db, "groups"),
+      snap => {
+        const list = snap.docs.map(d => ({...d.data(), id: d.id})).sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
+        setGroups(list);
+        setGroupsLoading(false);
+        setActiveGroupId(prev => {
+          if (prev && list.some(g => g.id === prev)) return prev;
+          if (prev) return null; // le groupe a été supprimé ailleurs
+          const last = readLastGroup();
+          return last && list.some(g => g.id === last) ? last : null;
+        });
+      },
+      () => { setGroupsLoading(false); }
+    );
+    return () => unsub();
   }, [user, guestMode]);
 
+  useEffect(() => { writeLastGroup(activeGroupId); }, [activeGroupId]);
+
+  // --- Migration automatique : les anciennes collections deviennent un 1er groupe ---
+  const migrateLegacyData = async () => {
+    setMigrating(true);
+    try {
+      const gRef = doc(db, "groups", LEGACY_GROUP_ID);
+      await setDoc(gRef, {name: LEGACY_GROUP_NAME, createdAt: Date.now(), migrated: true});
+
+      for (const name of GROUP_SUBCOLLECTIONS) {
+        const snap = await getDocs(collection(db, name));
+        if (!snap.empty) {
+          const batch = writeBatch(db);
+          snap.docs.forEach(d => batch.set(doc(db, "groups", LEGACY_GROUP_ID, name, d.id), d.data()));
+          await batch.commit();
+        } else if (name === "rules" && INITIAL_RULES.length) {
+          const batch = writeBatch(db);
+          INITIAL_RULES.forEach(r => batch.set(doc(db, "groups", LEGACY_GROUP_ID, "rules", String(r.id)), r));
+          await batch.commit();
+        } else if (name === "calendar" && INITIAL_CALENDAR.length) {
+          const batch = writeBatch(db);
+          INITIAL_CALENDAR.forEach(c => batch.set(doc(db, "groups", LEGACY_GROUP_ID, "calendar", String(c.id)), c));
+          await batch.commit();
+        } else if (name === "payments" && INITIAL_PAYMENTS.length) {
+          const batch = writeBatch(db);
+          INITIAL_PAYMENTS.forEach(p => batch.set(doc(db, "groups", LEGACY_GROUP_ID, "payments", p.player), p));
+          await batch.commit();
+        }
+      }
+      // réglages (sélection des règles du tableau Stats)
+      try {
+        const st = await getDoc(doc(db, "settings", "statsRules"));
+        if (st.exists()) await setDoc(doc(db, "groups", LEGACY_GROUP_ID, "settings", "statsRules"), st.data());
+      } catch(e) {}
+
+      showToast(`Groupe "${LEGACY_GROUP_NAME}" créé avec tes données existantes ✓`);
+    } catch (e) {
+      showToast("Migration impossible — vérifie les règles Firestore pour 'groups'");
+    }
+    setMigrating(false);
+  };
+
   useEffect(() => {
-    if (!isAdmin) return;
-    const initIfEmpty = async () => {
-      const rulesSnap = await getDocs(collection(db, "rules"));
-      if (rulesSnap.empty) {
+    if (!isAdmin || groupsLoading || migrating) return;
+    if (groups.length > 0) return;
+    migrateLegacyData();
+  }, [isAdmin, groupsLoading, groups.length]);
+
+  // --- Données du groupe actif ---
+  useEffect(() => {
+    if (!activeGroupId || (!user && !guestMode)) {
+      setRules([]); setMatches([]); setCalendar([]); setPayments([]);
+      setPlayersList([]); setWeights([]); setRuleHistory([]); setStatsRuleIds(null);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    const base = ["groups", activeGroupId];
+    let loaded = 0;
+    const checkDone = () => { loaded++; if (loaded >= 6) setLoading(false); };
+    const sub = (name) => collection(db, base[0], base[1], name);
+    const unsubRules = onSnapshot(sub("rules"), snap => { setRules(snap.docs.map(d => ({...d.data(), id: d.id}))); checkDone(); });
+    const unsubMatches = onSnapshot(sub("matches"), snap => { const fb = snap.docs.map(d => ({...d.data(), fbId: d.id})); setMatches(fb.sort((a,b) => (a.sortKey||0)-(b.sortKey||0))); checkDone(); });
+    const unsubPayments = onSnapshot(sub("payments"), snap => { setPayments(snap.docs.map(d => ({...d.data(), fbId: d.id}))); checkDone(); });
+    const unsubCal = onSnapshot(sub("calendar"), snap => { setCalendar(snap.docs.map(d => ({...d.data(), fbId: d.id}))); checkDone(); });
+    const unsubPlayers = onSnapshot(sub("playersList"), snap => { setPlayersList(snap.docs.map(d => ({...d.data(), id: d.id}))); checkDone(); });
+    const unsubWeights = onSnapshot(sub("weights"), snap => { setWeights(snap.docs.map(d => ({...d.data(), fbId: d.id}))); checkDone(); });
+    const unsubStatsRules = onSnapshot(doc(db, base[0], base[1], "settings", "statsRules"), snap => { setStatsRuleIds(snap.exists() ? (snap.data().ruleIds || []) : null); });
+    const unsubRuleHistory = onSnapshot(sub("ruleHistory"), snap => { setRuleHistory(snap.docs.map(d => ({...d.data(), fbId: d.id})).sort((a,b)=>(b.timestamp||0)-(a.timestamp||0))); });
+    return () => { unsubRules(); unsubMatches(); unsubPayments(); unsubCal(); unsubPlayers(); unsubWeights(); unsubStatsRules(); unsubRuleHistory(); };
+  }, [activeGroupId, user, guestMode]);
+
+  // --- Création / renommage / suppression de groupe ---
+  const createGroup = async () => {
+    const name = newGroup.name.trim();
+    if (!name) return;
+    if (!confirmAction(`Créer le groupe "${name}" ?`)) return;
+    const id = `${name.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"")}-${Date.now().toString().slice(-5)}`;
+    try {
+      await setDoc(doc(db, "groups", id), {name, createdAt: Date.now()});
+      if (newGroup.seedRules && INITIAL_RULES.length) {
         const batch = writeBatch(db);
-        INITIAL_RULES.forEach(r => batch.set(doc(db, "rules", String(r.id)), r));
+        INITIAL_RULES.forEach(r => batch.set(doc(db, "groups", id, "rules", String(r.id)), r));
         await batch.commit();
       }
-      const matchesSnap = await getDocs(collection(db, "matches"));
-      if (matchesSnap.empty && HISTORICAL_MATCHES.length) {
+      if (newGroup.seedCalendar && INITIAL_CALENDAR.length) {
         const batch = writeBatch(db);
-        HISTORICAL_MATCHES.forEach(m => batch.set(doc(db, "matches", String(m.id)), m));
+        INITIAL_CALENDAR.forEach(c => batch.set(doc(db, "groups", id, "calendar", String(c.id)), c));
         await batch.commit();
       }
-      const paymentsSnap = await getDocs(collection(db, "payments"));
-      if (paymentsSnap.empty && INITIAL_PAYMENTS.length) {
-        const batch = writeBatch(db);
-        INITIAL_PAYMENTS.forEach(p => batch.set(doc(db, "payments", p.player), p));
+      setNewGroup({name:"", seedRules:true, seedCalendar:false});
+      setShowCreateGroup(false);
+      setActiveGroupId(id);
+      showToast(`Groupe "${name}" créé ✓`);
+    } catch (e) {
+      showToast("Création impossible — vérifie les règles Firestore pour 'groups'");
+    }
+  };
+
+  const renameGroup = async () => {
+    if (!editingGroup || !editingGroup.newName.trim()) return;
+    const trimmed = editingGroup.newName.trim();
+    await updateDoc(doc(db, "groups", editingGroup.id), {name: trimmed});
+    setEditingGroup(null);
+    showToast("Groupe renommé ✓");
+  };
+
+  const deleteGroup = async (g) => {
+    if (!confirmAction(`Supprimer le groupe "${g.name}" ET toutes ses données (joueurs, matchs, règles, paiements) ? Cette action est définitive.`)) return;
+    if (!confirmAction(`Dernière confirmation : tout le contenu de "${g.name}" sera perdu. Continuer ?`)) return;
+    try {
+      for (const name of [...GROUP_SUBCOLLECTIONS, "settings"]) {
+        const snap = await getDocs(collection(db, "groups", g.id, name));
+        if (snap.empty) continue;
+        let batch = writeBatch(db);
+        let n = 0;
+        for (const d of snap.docs) {
+          batch.delete(doc(db, "groups", g.id, name, d.id));
+          n++;
+          if (n % 400 === 0) { await batch.commit(); batch = writeBatch(db); }
+        }
         await batch.commit();
       }
-      const calSnap = await getDocs(collection(db, "calendar"));
-      if (calSnap.empty) {
-        const batch = writeBatch(db);
-        INITIAL_CALENDAR.forEach(c => batch.set(doc(db, "calendar", String(c.id)), c));
-        await batch.commit();
-      }
-    };
-    initIfEmpty();
-  }, [isAdmin]);
+      await deleteDoc(doc(db, "groups", g.id));
+      if (activeGroupId === g.id) setActiveGroupId(null);
+      showToast(`Groupe "${g.name}" supprimé`);
+    } catch (e) {
+      showToast("Suppression incomplète — réessaie");
+    }
+  };
+
+  const leaveGroup = () => {
+    setActiveGroupId(null);
+    setActiveTab("Dashboard");
+    setSelectedPlayer(null);
+    setViewMatchDetail(null);
+    setShowAddInfraction(false);
+    setShowAddPlayer(false);
+    setShowAddRule(false);
+    setShowAddCalendar(false);
+    setPlayerSearch("");
+  };
 
   const allEntries = useMemo(() => matches.flatMap(m => (m.entries||[]).map((e,idx) => ({...e, matchLabel:m.match, matchDate:m.date, matchId: m.fbId||String(m.id), sortKey:m.sortKey||0, entryIndex:idx}))), [matches]);
 
@@ -209,14 +358,14 @@ export default function App() {
   }, [playerStats, playersList]);
 
   useEffect(() => {
-    if (!isAdmin || Object.keys(playerStats).length === 0 || payments.length === 0) return;
+    if (!isAdmin || !activeGroupId || Object.keys(playerStats).length === 0 || payments.length === 0) return;
     payments.forEach(async p => {
       const newTotal = playerStats[p.player]?.total;
       if (newTotal !== undefined && Math.abs(newTotal - p.total) > 0.01) {
-        try { await updateDoc(doc(db, "payments", p.fbId || p.player), {total: newTotal}); } catch(e) {}
+        try { await updateDoc(gdoc("payments", p.fbId || p.player), {total: newTotal}); } catch(e) {}
       }
     });
-  }, [playerStats, isAdmin]);
+  }, [playerStats, isAdmin, activeGroupId]);
 
   const totalCaisse = useMemo(() => payments.reduce((s,p) => s+p.total, 0), [payments]);
 
@@ -243,11 +392,11 @@ export default function App() {
 
   const saveStatsRuleConfig = async (ids) => {
     try {
-      await setDoc(doc(db, "settings", "statsRules"), {ruleIds: ids});
+      await setDoc(gdoc("settings", "statsRules"), {ruleIds: ids});
       setShowStatsRuleConfig(false);
       showToast("Sélection des règles enregistrée ✓");
     } catch (e) {
-      showToast(e.code === "permission-denied" ? "Accès refusé par Firestore (règles de sécurité à ajuster pour 'settings')" : "Erreur lors de l'enregistrement");
+      showToast(e.code === "permission-denied" ? "Accès refusé par Firestore (règles de sécurité à ajuster pour 'groups')" : "Erreur lors de l'enregistrement");
     }
   };
 
@@ -285,7 +434,7 @@ export default function App() {
   // ---- Résumé du match : texte formaté (copier-coller) + PDF téléchargeable ----
   const generateMatchSummaryText = (m, ranked, total) => {
     const lines = [];
-    lines.push(`HBC LANGEAC — vs ${m.opponent}`);
+    lines.push(`HBC LANGEAC${activeGroup ? ` — ${activeGroup.name}` : ""} — vs ${m.opponent}`);
     lines.push(m.result ? `${m.result.toUpperCase()}${m.score ? ` (${m.score})` : ""}` : "Résultat non renseigné");
     lines.push(`${m.date || ""}${m.location ? " • "+m.location : ""}${m.home !== undefined ? " • "+(m.home?"Domicile":"Extérieur") : ""}${m.team ? " • "+m.team : ""}`);
     lines.push("");
@@ -315,6 +464,15 @@ export default function App() {
       pdf.setFontSize(18);
       pdf.text(`HBC LANGEAC — vs ${m.opponent || "?"}`, pageWidth / 2, y, { align: "center" });
       y += 8;
+
+      if (activeGroup) {
+        pdf.setFontSize(11);
+        pdf.setFont("helvetica", "normal");
+        pdf.setTextColor(110);
+        pdf.text(activeGroup.name, pageWidth / 2, y, { align: "center" });
+        pdf.setTextColor(0);
+        y += 7;
+      }
 
       pdf.setFontSize(13);
       pdf.setFont("helvetica", "normal");
@@ -413,9 +571,9 @@ export default function App() {
   const addPlayer = async () => {
     if (!newPlayerName.trim()) return;
     const name = newPlayerName.trim();
-    if (!confirmAction(`Ajouter le joueur "${name}" ?`)) return;
-    await setDoc(doc(db, "playersList", name), {name, hidden: false, createdAt: Date.now()});
-    if (!payments.find(p => p.player === name)) await setDoc(doc(db, "payments", name), {player: name, total: 0, paid: 0});
+    if (!confirmAction(`Ajouter le joueur "${name}" au groupe ${activeGroup?.name || ""} ?`)) return;
+    await setDoc(gdoc("playersList", name), {name, hidden: false, createdAt: Date.now()});
+    if (!payments.find(p => p.player === name)) await setDoc(gdoc("payments", name), {player: name, total: 0, paid: 0});
     setNewPlayerName(""); setShowAddPlayer(false);
     showToast(`${name} ajouté ✓`);
   };
@@ -423,8 +581,8 @@ export default function App() {
   const hidePlayer = async (name) => {
     if (!confirmAction(`Masquer ${name} ? Il n'apparaîtra plus dans les listes mais son historique est conservé.`)) return;
     const p = playersList.find(x => x.name === name);
-    if (p) await updateDoc(doc(db, "playersList", name), {hidden: true});
-    else await setDoc(doc(db, "playersList", name), {name, hidden: true, createdAt: Date.now()});
+    if (p) await updateDoc(gdoc("playersList", name), {hidden: true});
+    else await setDoc(gdoc("playersList", name), {name, hidden: true, createdAt: Date.now()});
     showToast(`${name} masqué`);
   };
 
@@ -436,22 +594,22 @@ export default function App() {
     const batch = writeBatch(db);
     matches.forEach(m => {
       const newEntries = (m.entries||[]).map(e => e.player === oldName ? {...e, player: trimmed} : e);
-      if (JSON.stringify(newEntries) !== JSON.stringify(m.entries||[])) batch.update(doc(db, "matches", m.fbId||String(m.id)), {entries: newEntries});
+      if (JSON.stringify(newEntries) !== JSON.stringify(m.entries||[])) batch.update(gdoc("matches", m.fbId||String(m.id)), {entries: newEntries});
     });
     const pay = payments.find(p => p.player === oldName);
     if (pay) {
       const {fbId, ...payData} = pay;
-      batch.delete(doc(db, "payments", fbId||oldName));
-      batch.set(doc(db, "payments", trimmed), {...payData, player: trimmed});
+      batch.delete(gdoc("payments", fbId||oldName));
+      batch.set(gdoc("payments", trimmed), {...payData, player: trimmed});
     }
     const wd = weights.find(w => w.player === oldName);
     if (wd) {
       const {fbId, ...wdData} = wd;
-      batch.delete(doc(db, "weights", fbId||oldName));
-      batch.set(doc(db, "weights", trimmed), {...wdData, player: trimmed});
+      batch.delete(gdoc("weights", fbId||oldName));
+      batch.set(gdoc("weights", trimmed), {...wdData, player: trimmed});
     }
-    batch.delete(doc(db, "playersList", oldName));
-    batch.set(doc(db, "playersList", trimmed), {name: trimmed, hidden: false, createdAt: Date.now()});
+    batch.delete(gdoc("playersList", oldName));
+    batch.set(gdoc("playersList", trimmed), {name: trimmed, hidden: false, createdAt: Date.now()});
     await batch.commit();
     setEditingPlayerName(null);
     showToast(`${oldName} → ${trimmed} ✓`);
@@ -490,11 +648,11 @@ export default function App() {
       ? matches.find(m => (m.fbId||String(m.id)) === matchDocId)
       : matches.find(m => m.match === HORS_MATCH_LABEL && !m.calMatchId);
     if (existing) {
-      await updateDoc(doc(db, "matches", existing.fbId||String(existing.id)), {entries: [...(existing.entries||[]), ...entries]});
+      await updateDoc(gdoc("matches", existing.fbId||String(existing.id)), {entries: [...(existing.entries||[]), ...entries]});
     } else {
       const idToUse = matchDocId || Date.now();
       const nm = {id: idToUse, match: matchLabelFinal, date: matchDateFinal, sortKey: matchSortKeyFinal, entries, ...(calMatchId ? {calMatchId} : {})};
-      await setDoc(doc(db, "matches", String(idToUse)), nm);
+      await setDoc(gdoc("matches", idToUse), nm);
     }
   };
 
@@ -523,7 +681,7 @@ export default function App() {
         const currentW = parseFloat(weightCurrent) || 0;
         if (!currentW) { showToast("Saisis un poids valide"); return; }
         if (weightPeriod === "avant") {
-          await setDoc(doc(db, "weights", player), {...wd, player, startWeight: currentW}, {merge: true});
+          await setDoc(gdoc("weights", player), {...wd, player, startWeight: currentW}, {merge: true});
           weightHandled = true;
         } else if (weightPeriod === "mi") {
           const baseW = wd.startWeight || parseFloat(weightStart) || 0;
@@ -531,7 +689,7 @@ export default function App() {
           const amount = calcWeightAmount(baseW, currentW);
           const diffG = Math.round((currentW - baseW) * 1000);
           entries.push({player, amount, detail:`Pesée mi-saison: ${diffG >= 0 ? "+" : ""}${diffG}g (${baseW}kg → ${currentW}kg)`});
-          await setDoc(doc(db, "weights", player), {...wd, player, startWeight: baseW, midWeight: currentW}, {merge: true});
+          await setDoc(gdoc("weights", player), {...wd, player, startWeight: baseW, midWeight: currentW}, {merge: true});
           weightHandled = true;
         } else if (weightPeriod === "fin") {
           const baseW = wd.midWeight || wd.startWeight || parseFloat(weightStart) || 0;
@@ -539,7 +697,7 @@ export default function App() {
           const amount = calcWeightAmount(baseW, currentW);
           const diffG = Math.round((currentW - baseW) * 1000);
           entries.push({player, amount, detail:`Pesée fin de saison: ${diffG >= 0 ? "+" : ""}${diffG}g (${baseW}kg → ${currentW}kg)`});
-          await setDoc(doc(db, "weights", player), {...wd, player, endWeight: currentW}, {merge: true});
+          await setDoc(gdoc("weights", player), {...wd, player, endWeight: currentW}, {merge: true});
           weightHandled = true;
         }
       }
@@ -564,12 +722,12 @@ export default function App() {
     entries.forEach(e => { byPlayer[e.player] = (byPlayer[e.player]||0) + e.amount; });
     for (const [pl, added] of Object.entries(byPlayer)) {
       const p = payments.find(x => x.player === pl);
-      if (p) await updateDoc(doc(db, "payments", p.fbId||pl), {total: (playerStats[pl]?.total||0) + added});
-      else await setDoc(doc(db, "payments", pl), {player: pl, total: added, paid: 0});
+      if (p) await updateDoc(gdoc("payments", p.fbId||pl), {total: (playerStats[pl]?.total||0) + added});
+      else await setDoc(gdoc("payments", pl), {player: pl, total: added, paid: 0});
     }
 
     setNewInfraction(prev => ({...prev, player:"", checkedRules:{}, checkedPlayers:{}, useWeight:false, weightPeriod:"avant", weightStart:"", weightCurrent:"", customDetail:"", customAmount:""}));
-    showToast(`${entries.length} infraction(s) ajoutée(s) (${entries.reduce((s,e)=>s+e.amount,0).toFixed(2)}€) ✓`);
+    showToast(`${entries.length} infraction(s) ajoutée(s) (${totalToAdd.toFixed(2)}€) ✓`);
   };
 
   const deleteInfraction = async (matchId, entryIndex) => {
@@ -577,17 +735,17 @@ export default function App() {
     if (!m) return;
     const entry = (m.entries||[])[entryIndex];
     if (!confirmAction(entry ? `Supprimer l'infraction "${entry.detail}" (${entry.amount}€) de ${entry.player} ?` : "Supprimer cette infraction ?")) return;
-    await updateDoc(doc(db, "matches", m.fbId||String(m.id)), {entries: (m.entries||[]).filter((_,i) => i !== entryIndex)});
+    await updateDoc(gdoc("matches", m.fbId||String(m.id)), {entries: (m.entries||[]).filter((_,i) => i !== entryIndex)});
     if (entry) {
       const p = payments.find(x => x.player === entry.player);
-      if (p) await updateDoc(doc(db, "payments", p.fbId||entry.player), {total: Math.max(0, p.total - entry.amount)});
+      if (p) await updateDoc(gdoc("payments", p.fbId||entry.player), {total: Math.max(0, p.total - entry.amount)});
       const det = (entry.detail||"").toLowerCase();
       if (det.includes("pesée mi-saison")) {
         const wd = weights.find(w => w.player === entry.player);
-        if (wd) await updateDoc(doc(db, "weights", wd.fbId||entry.player), {midWeight: null});
+        if (wd) await updateDoc(gdoc("weights", wd.fbId||entry.player), {midWeight: null});
       } else if (det.includes("pesée fin de saison")) {
         const wd = weights.find(w => w.player === entry.player);
-        if (wd) await updateDoc(doc(db, "weights", wd.fbId||entry.player), {endWeight: null});
+        if (wd) await updateDoc(gdoc("weights", wd.fbId||entry.player), {endWeight: null});
       }
     }
     showToast("Infraction supprimée");
@@ -595,7 +753,7 @@ export default function App() {
 
   const logRuleHistory = async (entry) => {
     try {
-      await setDoc(doc(collection(db, "ruleHistory")), {...entry, timestamp: Date.now(), by: user?.email || (guestMode ? "invité" : "?")});
+      await setDoc(doc(gcol("ruleHistory")), {...entry, timestamp: Date.now(), by: user?.email || (guestMode ? "invité" : "?")});
     } catch (e) { /* l'historique ne doit jamais bloquer l'action principale */ }
   };
 
@@ -603,7 +761,7 @@ export default function App() {
     if (!newRule.name || !newRule.amount) return;
     if (!confirmAction(`Ajouter la règle "${newRule.name}" (${newRule.amount}€) ?`)) return;
     const r = {id: Date.now(), name: newRule.name, amount: parseFloat(newRule.amount)};
-    await setDoc(doc(db, "rules", String(r.id)), r);
+    await setDoc(gdoc("rules", r.id), r);
     await logRuleHistory({action: "ajout", ruleName: r.name, newAmount: r.amount});
     setNewRule({name:"",amount:""}); setShowAddRule(false); showToast("Règle ajoutée ✓");
   };
@@ -611,7 +769,7 @@ export default function App() {
   const saveRule = async () => {
     if (!confirmAction(`Modifier "${editingRule.name}" à ${editingRule.amount}€ ? Toutes les infractions déjà enregistrées avec cette règle seront recalculées.`)) return;
     const oldRule = rules.find(r => String(r.id) === String(editingRule.id));
-    await updateDoc(doc(db, "rules", String(editingRule.id)), editingRule);
+    await updateDoc(gdoc("rules", editingRule.id), editingRule);
     await logRuleHistory({action: "modification", ruleName: editingRule.name, oldName: oldRule?.name, oldAmount: oldRule?.amount, newAmount: editingRule.amount});
     const batch = writeBatch(db);
     let touched = false;
@@ -628,7 +786,7 @@ export default function App() {
         }
         return e;
       });
-      if (changed) { batch.update(doc(db, "matches", m.fbId||String(m.id)), {entries: newEntries}); touched = true; }
+      if (changed) { batch.update(gdoc("matches", m.fbId||String(m.id)), {entries: newEntries}); touched = true; }
     });
     if (touched) await batch.commit();
     setEditingRule(null);
@@ -637,7 +795,7 @@ export default function App() {
   const deleteRule = async (id) => {
     const r = rules.find(x => String(x.id) === String(id));
     if (!confirmAction(`Supprimer la règle "${r ? r.name : ""}" ? Les infractions déjà enregistrées avec cette règle ne seront pas supprimées.`)) return;
-    await deleteDoc(doc(db, "rules", String(id)));
+    await deleteDoc(gdoc("rules", id));
     await logRuleHistory({action: "suppression", ruleName: r?.name, oldAmount: r?.amount});
     showToast("Règle supprimée");
   };
@@ -646,7 +804,7 @@ export default function App() {
     if (!newCalMatch.opponent || !newCalMatch.date) return;
     if (!confirmAction(`Ajouter le match vs ${newCalMatch.opponent} (${newCalMatch.date}) au calendrier ?`)) return;
     const m = {...newCalMatch, id: Date.now(), sortKey: 999, home: newCalMatch.home === true || newCalMatch.home === "true"};
-    await setDoc(doc(db, "calendar", String(m.id)), m);
+    await setDoc(gdoc("calendar", m.id), m);
     setNewCalMatch({date:"",opponent:"",home:true,location:"",team:"Éq1"}); setShowAddCalendar(false); showToast("Match ajouté ✓");
   };
 
@@ -659,7 +817,7 @@ export default function App() {
   const nextMatchFbId2 = getNextId(calendarEq2);
 
   const saveMatchResult = async (m, result, score) => {
-    await updateDoc(doc(db, "calendar", m.fbId || String(m.id)), {result, score});
+    await updateDoc(gdoc("calendar", m.fbId || String(m.id)), {result, score});
     setEditingMatchResult(null);
     showToast("Résultat enregistré ✓");
   };
@@ -669,7 +827,7 @@ export default function App() {
     const p = payments.find(x => x.player === playerName);
     if (!p) return;
     if (!confirmAction(`Enregistrer un paiement de ${added.toFixed(2)}€ pour ${playerName} ?`)) return;
-    await updateDoc(doc(db, "payments", p.fbId||playerName), {paid: Math.min(p.paid + added, p.total)});
+    await updateDoc(gdoc("payments", p.fbId||playerName), {paid: Math.min(p.paid + added, p.total)});
     setEditingPayment(null); setPaymentInput(""); showToast("Paiement enregistré ✓");
   };
 
@@ -677,7 +835,7 @@ export default function App() {
     const p = payments.find(x => x.player === playerName);
     if (!p) return;
     if (typeof window !== "undefined" && !window.confirm(`Remettre à 0 le montant payé par ${playerName} ?`)) return;
-    await updateDoc(doc(db, "payments", p.fbId||playerName), {paid: 0});
+    await updateDoc(gdoc("payments", p.fbId||playerName), {paid: 0});
     showToast(`Paiement de ${playerName} remis à 0`);
   };
 
@@ -749,12 +907,14 @@ export default function App() {
     );
   };
 
-  if (loading) return (
+  const Splash = ({text}) => (
     <div style={{minHeight:"100vh",background:"#f0f6ff",display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:16}}>
       <div style={{width:80,height:80,borderRadius:"50%",background:"#1565c0",display:"flex",alignItems:"center",justifyContent:"center",color:"white",fontSize:36}}>🤾</div>
-      <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:24,color:"#0d47a1",letterSpacing:2}}>Chargement...</div>
+      <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:24,color:"#0d47a1",letterSpacing:2}}>{text}</div>
     </div>
   );
+
+  if (!authReady) return <Splash text="Chargement..." />;
 
   if (!user && !guestMode) return (
     <div style={{minHeight:"100vh",background:"linear-gradient(135deg,#1565c0,#0d47a1)",display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
@@ -784,6 +944,101 @@ export default function App() {
       </div>
     </div>
   );
+
+  // ============================ ÉCRAN D'ACCUEIL : CHOIX DU GROUPE ============================
+  if (!activeGroupId) {
+    if (groupsLoading) return <Splash text="Chargement des groupes..." />;
+    if (migrating) return <Splash text="Migration de tes données..." />;
+    return (
+      <div style={{minHeight:"100vh",background:"#f0f6ff",fontFamily:"'Nunito',sans-serif"}}>
+        {toast && <div style={{position:"fixed",top:16,left:"50%",transform:"translateX(-50%)",background:"#1565c0",color:"white",padding:"10px 24px",borderRadius:30,fontWeight:800,fontSize:14,zIndex:9999,boxShadow:"0 4px 20px rgba(0,0,0,0.2)",whiteSpace:"nowrap"}}>{toast}</div>}
+
+        {editingGroup && (
+          <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+            <div style={{background:"white",borderRadius:20,padding:28,width:"100%",maxWidth:360,boxShadow:"0 20px 60px rgba(0,0,0,0.3)"}}>
+              <h3 style={{...C.h3,marginBottom:20}}>✏️ Renommer le groupe</h3>
+              <input value={editingGroup.newName} onChange={e=>setEditingGroup(p=>({...p,newName:e.target.value}))} style={{...C.input,marginBottom:20}} placeholder="Nom du groupe" onKeyDown={e=>e.key==="Enter"&&renameGroup()}/>
+              <div style={{display:"flex",gap:10}}>
+                <button onClick={renameGroup} style={{flex:1,background:"#1565c0",color:"white",border:"none",padding:"12px",borderRadius:10,cursor:"pointer",fontWeight:800,fontSize:14}}>Confirmer</button>
+                <button onClick={()=>setEditingGroup(null)} style={{flex:1,background:"#eceff1",color:"#546e7a",border:"none",padding:"12px",borderRadius:10,cursor:"pointer",fontWeight:700}}>Annuler</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div style={{background:"linear-gradient(135deg,#1565c0 0%,#0d47a1 100%)",boxShadow:"0 4px 20px rgba(13,71,161,0.3)"}}>
+          <div style={{maxWidth:900,margin:"0 auto",padding:"16px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:8}}>
+            <div style={{display:"flex",alignItems:"center",gap:12}}>
+              <div style={{width:46,height:46,borderRadius:"50%",background:"rgba(255,255,255,0.2)",display:"flex",alignItems:"center",justifyContent:"center",color:"white",fontSize:22,flexShrink:0}}>🤾</div>
+              <div>
+                <div style={{color:"white",fontFamily:"'Bebas Neue',sans-serif",fontSize:20,letterSpacing:2,lineHeight:1}}>HBC LANGEAC</div>
+                <div style={{color:"#90caf9",fontSize:10,fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>Caisse Noire</div>
+              </div>
+            </div>
+            <button onClick={()=>{ if(user) signOut(auth); setGuestMode(false); setActiveGroupId(null); }} style={{background:"rgba(255,255,255,0.15)",border:"none",borderRadius:10,padding:"8px 10px",color:"white",cursor:"pointer",fontSize:11,fontWeight:700,lineHeight:1.4}}>
+              {isAdmin?"👑":guestMode?"👁️":"👤"}<br/>Déco
+            </button>
+          </div>
+        </div>
+
+        <div style={{maxWidth:900,margin:"0 auto",padding:"24px 16px"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6,flexWrap:"wrap",gap:10}}>
+            <h2 style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:28,color:"#0d47a1",letterSpacing:1,margin:0}}>Choisis un groupe</h2>
+            {isAdmin && <button onClick={()=>setShowCreateGroup(!showCreateGroup)} style={{background:"#2e7d32",color:"white",border:"none",padding:"10px 18px",borderRadius:10,cursor:"pointer",fontWeight:800,fontSize:13}}>+ Nouveau groupe</button>}
+          </div>
+          <div style={{color:"#78909c",fontSize:13,marginBottom:20}}>Chaque groupe a ses propres joueurs, règles, matchs et paiements.</div>
+
+          {isAdmin && showCreateGroup && (
+            <div style={{...C.card,marginBottom:20}}>
+              <h3 style={C.h3}>➕ Créer un groupe</h3>
+              <label style={C.label}>Nom du groupe</label>
+              <input value={newGroup.name} onChange={e=>setNewGroup(p=>({...p,name:e.target.value}))} placeholder="ex: Gars 26-27, Filles 26-27, Vétérans..." style={{...C.input,marginBottom:12}} onKeyDown={e=>e.key==="Enter"&&createGroup()}/>
+              <label style={{display:"flex",alignItems:"center",gap:8,marginBottom:8,cursor:"pointer",fontSize:13,color:"#1a237e",fontWeight:700}}>
+                <input type="checkbox" checked={newGroup.seedRules} onChange={()=>setNewGroup(p=>({...p,seedRules:!p.seedRules}))}/>
+                Pré-remplir avec les règles par défaut ({INITIAL_RULES.length} règles)
+              </label>
+              <label style={{display:"flex",alignItems:"center",gap:8,marginBottom:16,cursor:"pointer",fontSize:13,color:"#1a237e",fontWeight:700}}>
+                <input type="checkbox" checked={newGroup.seedCalendar} onChange={()=>setNewGroup(p=>({...p,seedCalendar:!p.seedCalendar}))}/>
+                Pré-remplir avec le calendrier par défaut ({INITIAL_CALENDAR.length} matchs)
+              </label>
+              <div style={{display:"flex",gap:10}}>
+                <button onClick={createGroup} style={{background:"#2e7d32",color:"white",border:"none",padding:"10px 22px",borderRadius:8,cursor:"pointer",fontWeight:800}}>Créer</button>
+                <button onClick={()=>setShowCreateGroup(false)} style={{background:"#eceff1",color:"#546e7a",border:"none",padding:"10px 18px",borderRadius:8,cursor:"pointer",fontWeight:700}}>Annuler</button>
+              </div>
+            </div>
+          )}
+
+          {groups.length === 0 ? (
+            <div style={{...C.card,textAlign:"center",color:"#90a4ae",padding:40}}>
+              {isAdmin ? "Aucun groupe pour l'instant — crée le premier avec le bouton ci-dessus." : "Aucun groupe disponible pour l'instant."}
+            </div>
+          ) : (
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(240px,1fr))",gap:14}}>
+              {groups.map(g => (
+                <div key={g.id} style={{...C.card,borderTop:"4px solid #1565c0",padding:18,position:"relative",cursor:"pointer"}}>
+                  {isAdmin && (
+                    <div style={{position:"absolute",top:10,right:10,display:"flex",gap:5}}>
+                      <button onClick={e=>{e.stopPropagation();setEditingGroup({id:g.id,newName:g.name});}} style={{background:"#e3f2fd",color:"#1565c0",border:"none",width:24,height:24,borderRadius:5,cursor:"pointer",fontSize:11}}>✏️</button>
+                      <button onClick={e=>{e.stopPropagation();deleteGroup(g);}} style={{background:"#ffebee",color:"#e53935",border:"none",width:24,height:24,borderRadius:5,cursor:"pointer",fontSize:11}}>🗑</button>
+                    </div>
+                  )}
+                  <div onClick={()=>{setActiveGroupId(g.id); setActiveTab("Dashboard");}}>
+                    <div style={{width:44,height:44,borderRadius:14,background:"linear-gradient(135deg,#1565c0,#42a5f5)",display:"flex",alignItems:"center",justifyContent:"center",color:"white",fontSize:22,marginBottom:10}}>🏐</div>
+                    <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:22,color:"#0d47a1",letterSpacing:1,lineHeight:1.1}}>{g.name}</div>
+                    <div style={{fontSize:11,color:"#90a4ae",marginTop:4}}>{g.createdAt ? `Créé le ${new Date(g.createdAt).toLocaleDateString("fr-FR")}` : ""}</div>
+                    <div style={{marginTop:12,display:"inline-block",background:"#e3f2fd",color:"#1565c0",fontSize:12,fontWeight:800,padding:"6px 14px",borderRadius:8}}>Ouvrir →</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ============================ APPLI DANS UN GROUPE ============================
+  if (loading) return <Splash text="Chargement..." />;
 
   return (
     <div style={{minHeight:"100vh",background:"#f0f6ff",fontFamily:"'Nunito',sans-serif"}}>
@@ -879,11 +1134,11 @@ export default function App() {
 
       <div style={{background:"linear-gradient(135deg,#1565c0 0%,#0d47a1 100%)",boxShadow:"0 4px 20px rgba(13,71,161,0.3)",position:"sticky",top:0,zIndex:100}}>
         <div style={{maxWidth:1200,margin:"0 auto",padding:"10px 16px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:8}}>
-          <div style={{display:"flex",alignItems:"center",gap:12}}>
-            <div style={{width:46,height:46,borderRadius:"50%",background:"rgba(255,255,255,0.2)",display:"flex",alignItems:"center",justifyContent:"center",color:"white",fontSize:22,flexShrink:0}}>🤾</div>
-            <div>
-              <div style={{color:"white",fontFamily:"'Bebas Neue',sans-serif",fontSize:20,letterSpacing:2,lineHeight:1}}>HBC LANGEAC</div>
-              <div style={{color:"#90caf9",fontSize:10,fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>Caisse Noire</div>
+          <div style={{display:"flex",alignItems:"center",gap:12,minWidth:0}}>
+            <button onClick={leaveGroup} title="Changer de groupe" style={{width:46,height:46,borderRadius:"50%",background:"rgba(255,255,255,0.2)",display:"flex",alignItems:"center",justifyContent:"center",color:"white",fontSize:22,flexShrink:0,border:"none",cursor:"pointer"}}>🤾</button>
+            <div style={{minWidth:0}}>
+              <div style={{color:"white",fontFamily:"'Bebas Neue',sans-serif",fontSize:20,letterSpacing:2,lineHeight:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{activeGroup?.name || "HBC LANGEAC"}</div>
+              <button onClick={leaveGroup} style={{background:"none",border:"none",padding:0,color:"#90caf9",fontSize:10,fontWeight:700,letterSpacing:1,textTransform:"uppercase",cursor:"pointer",textDecoration:"underline"}}>⇄ Changer de groupe</button>
             </div>
           </div>
           <div style={{display:"flex",alignItems:"center",gap:8}}>
@@ -898,7 +1153,7 @@ export default function App() {
               </div>
               <div style={{color:"white",fontSize:11,fontWeight:800,marginTop:2}}>{goalPct}%</div>
             </div>
-            <button onClick={()=>{ if(user) signOut(auth); setGuestMode(false); }} style={{background:"rgba(255,255,255,0.15)",border:"none",borderRadius:10,padding:"8px 10px",color:"white",cursor:"pointer",fontSize:11,fontWeight:700,lineHeight:1.4}}>
+            <button onClick={()=>{ if(user) signOut(auth); setGuestMode(false); setActiveGroupId(null); }} style={{background:"rgba(255,255,255,0.15)",border:"none",borderRadius:10,padding:"8px 10px",color:"white",cursor:"pointer",fontSize:11,fontWeight:700,lineHeight:1.4}}>
               {isAdmin?"👑":guestMode?"👁️":"👤"}<br/>Déco
             </button>
           </div>
@@ -1382,6 +1637,9 @@ export default function App() {
                   </div>
                 </div>
               ))}
+              {rules.length === 0 && (
+                <div style={{...C.card,gridColumn:"1/-1",textAlign:"center",color:"#90a4ae"}}>Aucune règle dans ce groupe — ajoute-les avec le bouton "+ Règle".</div>
+              )}
             </div>
           </div>
         )}
@@ -1395,7 +1653,7 @@ export default function App() {
             {isAdmin && showAddCalendar && (
               <div style={{...C.card,marginBottom:16}}>
                 <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:12}}>
-                  {[{label:"DATE",key:"date",placeholder:"ex: Avr 2025"},{label:"ADVERSAIRE",key:"opponent",placeholder:"Nom"},{label:"LIEU",key:"location",placeholder:"Ville"}].map(f=>(
+                  {[{label:"DATE",key:"date",placeholder:"ex: 12/09/2026"},{label:"ADVERSAIRE",key:"opponent",placeholder:"Nom"},{label:"LIEU",key:"location",placeholder:"Ville"}].map(f=>(
                     <div key={f.key}><label style={C.label}>{f.label}</label><input value={newCalMatch[f.key]} onChange={e=>setNewCalMatch(p=>({...p,[f.key]:e.target.value}))} placeholder={f.placeholder} style={C.input}/></div>
                   ))}
                   <div><label style={C.label}>DOM / EXT</label><select value={newCalMatch.home} onChange={e=>setNewCalMatch(p=>({...p,home:e.target.value==="true"}))} style={C.input}><option value="true">Domicile</option><option value="false">Extérieur</option></select></div>
