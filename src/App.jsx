@@ -129,6 +129,7 @@ export default function App() {
   });
   const [newCalMatch, setNewCalMatch] = useState({date:"",opponent:"",home:true,location:"",team:"Éq1"});
   const [editingMatchResult, setEditingMatchResult] = useState(null);
+  const [editingCalMatch, setEditingCalMatch] = useState(null);
   const [editingPayment, setEditingPayment] = useState(null);
   const [paymentInput, setPaymentInput] = useState("");
   const [viewMatchDetail, setViewMatchDetail] = useState(null);
@@ -808,6 +809,26 @@ export default function App() {
     setNewCalMatch({date:"",opponent:"",home:true,location:"",team:"Éq1"}); setShowAddCalendar(false); showToast("Match ajouté ✓");
   };
 
+  const saveCalendarMatch = async () => {
+    if (!editingCalMatch) return;
+    const { fbId, date, opponent, location, home, team } = editingCalMatch;
+    if (!opponent.trim() || !date.trim()) { showToast("Renseigne au moins l'adversaire et la date"); return; }
+    if (!confirmAction(`Modifier le match vs ${opponent} (${date}) ?`)) return;
+    try {
+      await updateDoc(gdoc("calendar", fbId), {
+        date: date.trim(),
+        opponent: opponent.trim(),
+        location: (location||"").trim(),
+        home: home === true || home === "true",
+        team,
+      });
+      setEditingCalMatch(null);
+      showToast("Match modifié ✓");
+    } catch (e) {
+      showToast("Erreur lors de la modification du match");
+    }
+  };
+
   const calendarEq1 = useMemo(() => sortCalendarEntries(calendar.filter(m => (m.team||"Éq1") === "Éq1")), [calendar]);
   const calendarEq2 = useMemo(() => sortCalendarEntries(calendar.filter(m => m.team === "Éq2")), [calendar]);
   const sortedCalendar = useMemo(() => sortCalendarEntries(calendar), [calendar]);
@@ -1058,6 +1079,46 @@ export default function App() {
             <div style={{display:"flex",gap:10}}>
               <button onClick={renamePlayer} style={{flex:1,background:"#1565c0",color:"white",border:"none",padding:"12px",borderRadius:10,cursor:"pointer",fontWeight:800,fontSize:14}}>Confirmer</button>
               <button onClick={()=>setEditingPlayerName(null)} style={{flex:1,background:"#eceff1",color:"#546e7a",border:"none",padding:"12px",borderRadius:10,cursor:"pointer",fontWeight:700}}>Annuler</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editingCalMatch && (
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",padding:16}} onClick={()=>setEditingCalMatch(null)}>
+          <div style={{background:"white",borderRadius:20,padding:28,width:"100%",maxWidth:400,boxShadow:"0 20px 60px rgba(0,0,0,0.3)"}} onClick={e=>e.stopPropagation()}>
+            <h3 style={{...C.h3,marginBottom:20}}>✏️ Modifier le match</h3>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:12,marginBottom:16}}>
+              <div>
+                <label style={C.label}>DATE</label>
+                <input value={editingCalMatch.date} onChange={e=>setEditingCalMatch(p=>({...p,date:e.target.value}))} placeholder="ex: 12/09/2026" style={C.input}/>
+              </div>
+              <div>
+                <label style={C.label}>ADVERSAIRE</label>
+                <input value={editingCalMatch.opponent} onChange={e=>setEditingCalMatch(p=>({...p,opponent:e.target.value}))} placeholder="Nom" style={C.input}/>
+              </div>
+              <div>
+                <label style={C.label}>LIEU</label>
+                <input value={editingCalMatch.location} onChange={e=>setEditingCalMatch(p=>({...p,location:e.target.value}))} placeholder="Ville" style={C.input}/>
+              </div>
+              <div>
+                <label style={C.label}>DOM / EXT</label>
+                <select value={editingCalMatch.home} onChange={e=>setEditingCalMatch(p=>({...p,home:e.target.value==="true"}))} style={C.input}>
+                  <option value="true">Domicile</option>
+                  <option value="false">Extérieur</option>
+                </select>
+              </div>
+              <div>
+                <label style={C.label}>ÉQUIPE</label>
+                <select value={editingCalMatch.team} onChange={e=>setEditingCalMatch(p=>({...p,team:e.target.value}))} style={C.input}>
+                  <option value="Éq1">Équipe 1</option>
+                  <option value="Éq2">Équipe 2</option>
+                </select>
+              </div>
+            </div>
+            <div style={{display:"flex",gap:10}}>
+              <button onClick={saveCalendarMatch} style={{flex:1,background:"#1565c0",color:"white",border:"none",padding:"12px",borderRadius:10,cursor:"pointer",fontWeight:800,fontSize:14}}>Enregistrer</button>
+              <button onClick={()=>setEditingCalMatch(null)} style={{flex:1,background:"#eceff1",color:"#546e7a",border:"none",padding:"12px",borderRadius:10,cursor:"pointer",fontWeight:700}}>Annuler</button>
             </div>
           </div>
         </div>
