@@ -899,7 +899,10 @@ export default function App() {
                 <button onClick={()=>setEditingMatchResult(null)} style={{background:"#eceff1",color:"#546e7a",border:"none",padding:"6px 10px",borderRadius:8,cursor:"pointer",fontSize:12}}>✕</button>
               </div>
             ) : (
-              <button onClick={()=>setEditingMatchResult(fbId)} style={{background:"#e3f2fd",color:"#1565c0",border:"none",padding:"6px 12px",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:12}}>🏆 Résultat</button>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                <button onClick={()=>setEditingMatchResult(fbId)} style={{background:"#e3f2fd",color:"#1565c0",border:"none",padding:"6px 12px",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:12}}>🏆 Résultat</button>
+                <button onClick={()=>setEditingCalMatch({fbId, date:m.date||"", opponent:m.opponent||"", location:m.location||"", home:m.home!==false, team:m.team||"Éq1"})} style={{background:"#fff3e0",color:"#e65100",border:"none",padding:"6px 12px",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:12}}>✏️ Modifier</button>
+              </div>
             )}
           </div>
         )}
