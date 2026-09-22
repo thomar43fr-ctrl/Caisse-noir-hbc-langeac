@@ -33,7 +33,6 @@ function getPlayerInfractionStats(entries) {
     [
       {key:"mitraillette",label:"Mitraillette"},
       {key:"sortie veille",label:"Sortie veille"},
-      {key:"chaboula",label:"Chaboulat"},
       {key:"penalty raté",label:"Penalty raté"},
       {key:"contre attaque raté",label:"Contre-attaque ratée"},
       {key:"contre-attaque ratée",label:"Contre-attaque ratée"},
@@ -50,6 +49,7 @@ function getPlayerInfractionStats(entries) {
     ].forEach(({key,label}) => {
       if (d.includes(key)) counts[label] = (counts[label]||0)+1;
     });
+    if (isChaboulaDetail(e.detail)) counts["Chaboulat"] = (counts["Chaboulat"]||0)+1;
   });
   return Object.entries(counts).filter(([,v])=>v>=2).sort((a,b)=>b[1]-a[1]);
 }
@@ -61,6 +61,15 @@ const WEIGHT_PERIODS = [
   { key: "fin", label: "Fin de saison" },
 ];
 const QTY_OPTIONS = [1,2,3,4,5];
+// Une infraction ne compte comme "chaboulat" (🐐 classement, emoji 😈) que si
+// son nom est EXACTEMENT "chaboula" ou "chaboulat" — pas "photo chaboula",
+// "oubli chaboula", etc. qui sont des infractions différentes.
+const CHABOULA_NAMES = ["chaboula", "chaboulat"];
+const isChaboulaDetail = (detail) => {
+  if (!detail) return false;
+  const stripped = detail.replace(/\s*\(x\d+\)$/,"").trim().toLowerCase();
+  return CHABOULA_NAMES.includes(stripped);
+};
 // Noms des règles à privilégier par défaut dans le tableau "infraction la plus
 // fréquente" des Stats — elles doivent déjà exister (avec leur prix) dans tes
 // règles. Si un nom ne correspond pas exactement, utilise le bouton
@@ -134,6 +143,10 @@ export default function App() {
   const [paymentInput, setPaymentInput] = useState("");
   const [viewMatchDetail, setViewMatchDetail] = useState(null);
   const [expandedPlayerInMatch, setExpandedPlayerInMatch] = useState(null);
+  const [expandedPlayerMatch, setExpandedPlayerMatch] = useState(null);
+  const [rib, setRib] = useState(null);
+  const [editingRib, setEditingRib] = useState(null);
+  const [showRibEdit, setShowRibEdit] = useState(false);
   const [statsRuleIds, setStatsRuleIds] = useState(null);
   const [showStatsRuleConfig, setShowStatsRuleConfig] = useState(false);
   const [tempStatsRuleIds, setTempStatsRuleIds] = useState([]);
@@ -246,7 +259,7 @@ export default function App() {
   useEffect(() => {
     if (!activeGroupId || (!user && !guestMode)) {
       setRules([]); setMatches([]); setCalendar([]); setPayments([]);
-      setPlayersList([]); setWeights([]); setRuleHistory([]); setStatsRuleIds(null);
+      setPlayersList([]); setWeights([]); setRuleHistory([]); setStatsRuleIds(null); setRib(null);
       setLoading(false);
       return;
     }
@@ -263,7 +276,8 @@ export default function App() {
     const unsubWeights = onSnapshot(sub("weights"), snap => { setWeights(snap.docs.map(d => ({...d.data(), fbId: d.id}))); checkDone(); });
     const unsubStatsRules = onSnapshot(doc(db, base[0], base[1], "settings", "statsRules"), snap => { setStatsRuleIds(snap.exists() ? (snap.data().ruleIds || []) : null); });
     const unsubRuleHistory = onSnapshot(sub("ruleHistory"), snap => { setRuleHistory(snap.docs.map(d => ({...d.data(), fbId: d.id})).sort((a,b)=>(b.timestamp||0)-(a.timestamp||0))); });
-    return () => { unsubRules(); unsubMatches(); unsubPayments(); unsubCal(); unsubPlayers(); unsubWeights(); unsubStatsRules(); unsubRuleHistory(); };
+    const unsubRib = onSnapshot(doc(db, base[0], base[1], "settings", "rib"), snap => { setRib(snap.exists() ? snap.data() : null); });
+    return () => { unsubRules(); unsubMatches(); unsubPayments(); unsubCal(); unsubPlayers(); unsubWeights(); unsubStatsRules(); unsubRuleHistory(); unsubRib(); };
   }, [activeGroupId, user, guestMode]);
 
   // --- Création / renommage / suppression de groupe ---
@@ -346,7 +360,7 @@ export default function App() {
       if (!stats[p]) stats[p] = {total:0, count:0, chaboula:0, entries:[]};
       stats[p].total += e.amount;
       if (e.amount > 0) stats[p].count++;
-      if (e.detail && /chaboula/i.test(e.detail)) stats[p].chaboula++;
+      if (isChaboulaDetail(e.detail)) stats[p].chaboula += (e.qty||1);
       stats[p].entries.push(e);
     });
     return stats;
@@ -398,6 +412,37 @@ export default function App() {
       showToast("Sélection des règles enregistrée ✓");
     } catch (e) {
       showToast(e.code === "permission-denied" ? "Accès refusé par Firestore (règles de sécurité à ajuster pour 'groups')" : "Erreur lors de l'enregistrement");
+    }
+  };
+
+  const saveRib = async () => {
+    if (!editingRib) return;
+    if (!confirmAction("Enregistrer ces informations RIB ?")) return;
+    try {
+      await setDoc(gdoc("settings", "rib"), {
+        holder: (editingRib.holder||"").trim(),
+        iban: (editingRib.iban||"").trim(),
+        bic: (editingRib.bic||"").trim(),
+      });
+      setShowRibEdit(false);
+      showToast("RIB enregistré ✓");
+    } catch (e) {
+      showToast("Erreur lors de l'enregistrement du RIB");
+    }
+  };
+
+  const copyRib = async () => {
+    if (!rib) return;
+    const text = `Titulaire : ${rib.holder||""}\nIBAN : ${rib.iban||""}\nBIC : ${rib.bic||""}`;
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+        showToast("RIB copié dans le presse-papier ✓");
+        return;
+      }
+      throw new Error("clipboard indisponible");
+    } catch (e) {
+      showToast("Impossible de copier automatiquement — copie le texte manuellement");
     }
   };
 
@@ -1283,6 +1328,38 @@ export default function App() {
 
         {activeTab==="Paiements" && (
           <div>
+            <div style={{...C.card,marginBottom:16}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom: (rib || isAdmin) ? 10 : 0,flexWrap:"wrap",gap:8}}>
+                <h3 style={{...C.h3,margin:0}}>🏦 RIB de la caisse noire</h3>
+                {isAdmin && (
+                  <button onClick={()=>{setEditingRib(rib ? {...rib} : {holder:"",iban:"",bic:""}); setShowRibEdit(!showRibEdit);}} style={{background:"#e3f2fd",color:"#1565c0",border:"none",padding:"6px 12px",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:12}}>✏️ {rib ? "Modifier" : "Ajouter"}</button>
+                )}
+              </div>
+              {showRibEdit ? (
+                <div>
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))",gap:10,marginBottom:12}}>
+                    <div><label style={C.label}>Titulaire</label><input value={editingRib?.holder||""} onChange={e=>setEditingRib(p=>({...p,holder:e.target.value}))} placeholder="Nom du titulaire" style={C.input}/></div>
+                    <div><label style={C.label}>IBAN</label><input value={editingRib?.iban||""} onChange={e=>setEditingRib(p=>({...p,iban:e.target.value}))} placeholder="FR76..." style={C.input}/></div>
+                    <div><label style={C.label}>BIC</label><input value={editingRib?.bic||""} onChange={e=>setEditingRib(p=>({...p,bic:e.target.value}))} placeholder="XXXXXXXX" style={C.input}/></div>
+                  </div>
+                  <div style={{display:"flex",gap:8}}>
+                    <button onClick={saveRib} style={{background:"#1565c0",color:"white",border:"none",padding:"8px 16px",borderRadius:8,cursor:"pointer",fontWeight:800,fontSize:13}}>Enregistrer</button>
+                    <button onClick={()=>setShowRibEdit(false)} style={{background:"#eceff1",color:"#546e7a",border:"none",padding:"8px 14px",borderRadius:8,cursor:"pointer",fontSize:13}}>Annuler</button>
+                  </div>
+                </div>
+              ) : rib ? (
+                <div>
+                  <div style={{fontSize:13,color:"#1a237e",lineHeight:1.9}}>
+                    <div><strong>Titulaire :</strong> {rib.holder||"—"}</div>
+                    <div><strong>IBAN :</strong> {rib.iban||"—"}</div>
+                    <div><strong>BIC :</strong> {rib.bic||"—"}</div>
+                  </div>
+                  <button onClick={copyRib} style={{marginTop:10,background:"#1565c0",color:"white",border:"none",padding:"8px 18px",borderRadius:8,cursor:"pointer",fontWeight:800,fontSize:13}}>📋 Copier le RIB</button>
+                </div>
+              ) : (
+                <div style={{color:"#90a4ae",fontSize:13}}>{isAdmin ? "Aucun RIB enregistré — clique sur \"Ajouter\" pour le renseigner." : "Aucun RIB renseigné pour l'instant."}</div>
+              )}
+            </div>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16,flexWrap:"wrap",gap:10}}>
               <h2 style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:26,color:"#0d47a1",letterSpacing:1,margin:0}}>💳 Paiements</h2>
               <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
@@ -1353,7 +1430,7 @@ export default function App() {
           <div>
             {selectedPlayer ? (
               <div>
-                <button onClick={()=>setSelectedPlayer(null)} style={{background:"#1565c0",color:"white",border:"none",padding:"8px 18px",borderRadius:8,cursor:"pointer",fontWeight:700,marginBottom:16}}>← Retour</button>
+                <button onClick={()=>{setSelectedPlayer(null);setExpandedPlayerMatch(null);}} style={{background:"#1565c0",color:"white",border:"none",padding:"8px 18px",borderRadius:8,cursor:"pointer",fontWeight:700,marginBottom:16}}>← Retour</button>
                 <div style={C.card}>
                   <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:20}}>
                     <div style={{width:54,height:54,borderRadius:"50%",background:"linear-gradient(135deg,#1565c0,#42a5f5)",display:"flex",alignItems:"center",justifyContent:"center",color:"white",fontFamily:"'Bebas Neue',sans-serif",fontSize:26,flexShrink:0}}>{selectedPlayer[0]}</div>
@@ -1371,24 +1448,32 @@ export default function App() {
                     entries.forEach(e => { if (!byMatch[e.matchLabel]) byMatch[e.matchLabel] = {date:e.matchDate,sortKey:e.sortKey||0,entries:[]}; byMatch[e.matchLabel].entries.push(e); });
                     const sorted = Object.entries(byMatch).sort((a,b)=>(b[1].sortKey||0)-(a[1].sortKey||0));
                     if (!sorted.length) return <div style={{color:"#90a4ae",padding:20,textAlign:"center"}}>Aucune infraction</div>;
-                    return sorted.map(([matchLabel,{date,entries:mE}]) => (
-                      <div key={matchLabel} style={{marginBottom:12}}>
-                        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
-                          <div style={{fontSize:11,fontWeight:800,color:"#0d47a1",background:"#e3f2fd",borderRadius:8,padding:"3px 10px"}}>{matchLabel}</div>
-                          <div style={{fontSize:11,color:"#90a4ae"}}>{date}</div>
-                          <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:16,color:"#1565c0",marginLeft:"auto"}}>{mE.reduce((s,e)=>s+e.amount,0)}€</div>
-                        </div>
-                        {mE.map((e,i) => (
-                          <div key={i} style={{display:"flex",alignItems:"center",padding:"8px 12px",background:"#f8fbff",borderRadius:8,marginBottom:4,borderLeft:`3px solid ${e.amount>10?"#e53935":e.amount>5?"#fb8c00":"#1565c0"}`}}>
-                            <div style={{fontSize:13,color:"#546e7a",flex:1}}>{e.detail}</div>
-                            <div style={{display:"flex",alignItems:"center",gap:8,flexShrink:0}}>
-                              <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:17,color:e.amount>10?"#e53935":e.amount>5?"#fb8c00":"#1565c0"}}>{e.amount}€</div>
-                              {isAdmin && <button onClick={()=>deleteInfraction(e.matchId,e.entryIndex)} style={{background:"#ffebee",color:"#e53935",border:"none",width:26,height:26,borderRadius:6,cursor:"pointer",fontSize:12,display:"flex",alignItems:"center",justifyContent:"center"}}>🗑</button>}
-                            </div>
+                    return sorted.map(([matchLabel,{date,entries:mE}]) => {
+                      const isOpen = expandedPlayerMatch === matchLabel;
+                      return (
+                        <div key={matchLabel} style={{marginBottom:8}}>
+                          <div onClick={()=>setExpandedPlayerMatch(isOpen?null:matchLabel)} style={{display:"flex",alignItems:"center",gap:8,padding:"10px 12px",background:"#e3f2fd",borderRadius:10,cursor:"pointer"}}>
+                            <div style={{fontSize:12,fontWeight:800,color:"#0d47a1",flex:1}}>{matchLabel}</div>
+                            <div style={{fontSize:11,color:"#546e7a"}}>{date}</div>
+                            <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:16,color:"#1565c0"}}>{mE.reduce((s,e)=>s+e.amount,0)}€</div>
+                            <div style={{color:"#546e7a",fontSize:11}}>{isOpen?"▲":"▼"}</div>
                           </div>
-                        ))}
-                      </div>
-                    ));
+                          {isOpen && (
+                            <div style={{marginTop:6}}>
+                              {mE.map((e,i) => (
+                                <div key={i} style={{display:"flex",alignItems:"center",padding:"8px 12px",background:"#f8fbff",borderRadius:8,marginBottom:4,borderLeft:`3px solid ${e.amount>10?"#e53935":e.amount>5?"#fb8c00":"#1565c0"}`}}>
+                                  <div style={{fontSize:13,color:"#546e7a",flex:1}}>{e.detail}</div>
+                                  <div style={{display:"flex",alignItems:"center",gap:8,flexShrink:0}}>
+                                    <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:17,color:e.amount>10?"#e53935":e.amount>5?"#fb8c00":"#1565c0"}}>{e.amount}€</div>
+                                    {isAdmin && <button onClick={()=>deleteInfraction(e.matchId,e.entryIndex)} style={{background:"#ffebee",color:"#e53935",border:"none",width:26,height:26,borderRadius:6,cursor:"pointer",fontSize:12,display:"flex",alignItems:"center",justifyContent:"center"}}>🗑</button>}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    });
                   })()}
                 </div>
               </div>
