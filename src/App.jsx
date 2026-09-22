@@ -155,6 +155,9 @@ export default function App() {
   const [ruleHistory, setRuleHistory] = useState([]);
   const [showRuleHistory, setShowRuleHistory] = useState(false);
   const [playerSearch, setPlayerSearch] = useState("");
+  const [infractionRuleSearch, setInfractionRuleSearch] = useState("");
+  const [infractionPlayerSearch, setInfractionPlayerSearch] = useState("");
+  const [paymentSearch, setPaymentSearch] = useState("");
   const [user, setUser] = useState(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [authReady, setAuthReady] = useState(false);
@@ -1371,8 +1374,9 @@ export default function App() {
                 ))}
               </div>
             </div>
+            <input value={paymentSearch} onChange={e=>setPaymentSearch(e.target.value)} placeholder="🔍 Rechercher un joueur..." style={{...C.input,marginBottom:14,maxWidth:320}}/>
             <div style={{display:"flex",flexDirection:"column",gap:8}}>
-              {payments.slice().sort((a,b)=>(b.total-b.paid)-(a.total-a.paid)).map(p => {
+              {payments.filter(p => p.player.toLowerCase().includes(paymentSearch.trim().toLowerCase())).slice().sort((a,b)=>(b.total-b.paid)-(a.total-a.paid)).map(p => {
                 const reste = p.total - p.paid;
                 const pct = p.total > 0 ? Math.round((p.paid/p.total)*100) : 0;
                 const isPaid = reste <= 0;
@@ -1545,8 +1549,9 @@ export default function App() {
                     {newInfraction.mode === "player" && (
                       <>
                         <label style={C.label}>Règles (coche + choisis le nombre de fois, 1 à 5)</label>
+                        <input value={infractionRuleSearch} onChange={e=>setInfractionRuleSearch(e.target.value)} placeholder="🔍 Rechercher une règle..." style={{...C.input,marginBottom:8}}/>
                         <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(240px,1fr))",gap:6,marginBottom:14,maxHeight:280,overflowY:"auto",padding:"8px",background:"#f8fbff",borderRadius:8}}>
-                          {rules.map(r => {
+                          {rules.filter(r => r.name.toLowerCase().includes(infractionRuleSearch.trim().toLowerCase())).map(r => {
                             const qty = newInfraction.checkedRules[r.id];
                             return (
                               <div key={r.id} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 8px",borderRadius:6,background:qty?"#e3f2fd":"transparent"}}>
@@ -1568,8 +1573,9 @@ export default function App() {
                     {newInfraction.mode === "rule" && (
                       <>
                         <label style={C.label}>Joueurs concernés (coche + nombre de fois, 1 à 5)</label>
+                        <input value={infractionPlayerSearch} onChange={e=>setInfractionPlayerSearch(e.target.value)} placeholder="🔍 Rechercher un joueur..." style={{...C.input,marginBottom:8}}/>
                         <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(200px,1fr))",gap:6,marginBottom:14,maxHeight:280,overflowY:"auto",padding:"8px",background:"#f8fbff",borderRadius:8}}>
-                          {players.map(p => {
+                          {players.filter(p => p.toLowerCase().includes(infractionPlayerSearch.trim().toLowerCase())).map(p => {
                             const qty = newInfraction.checkedPlayers[p];
                             return (
                               <div key={p} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 8px",borderRadius:6,background:qty?"#e3f2fd":"transparent"}}>
